@@ -1,0 +1,6 @@
+# Instale somente os recursos desejados no mesmo Python do JARVIS.
+screen-brightness-control
+tavily-python
+faster-whisper
+openwakeword
+piper-tts

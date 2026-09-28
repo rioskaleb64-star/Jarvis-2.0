@@ -1,0 +1,15 @@
+openai
+websockets
+pywebview
+psutil
+pywin32
+pyautogui
+pycaw
+comtypes
+numpy
+PyAudioWPatch
+SpeechRecognition
+keyboard
+pyperclip
+pystray
+Pillow

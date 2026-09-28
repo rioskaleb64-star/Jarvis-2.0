@@ -1,0 +1,1196 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<title>JARVIS</title>
+<link rel="stylesheet" href="hud_extras.css">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { width:100%; height:100%; background:#000; overflow:hidden; font-family:'Consolas','Courier New',monospace; }
+#glCanvas { position:fixed; top:0; left:0; width:100vw; height:100vh; display:block; }
+
+#vignette {
+  position:fixed; inset:0; z-index:5; pointer-events:none;
+  background:radial-gradient(ellipse at center, rgba(0,0,0,0) 25%, rgba(0,0,0,0.96) 100%);
+}
+
+#statusText {
+  position:fixed; bottom:8%; left:50%; transform:translateX(-50%);
+  color:rgba(230,220,200,0.75); font-size:13px; letter-spacing:6px; z-index:10; user-select:none;
+  transition:opacity 0.25s ease;
+}
+#hoverZone { position:fixed; top:0; right:0; width:24px; height:100%; z-index:20; }
+#panel {
+  position:fixed; top:0; right:0; width:260px; height:100%;
+  background:rgba(6,6,10,0.9); border-left:1px solid rgba(255,180,80,0.2);
+  transform:translateX(100%); transition:transform 0.4s cubic-bezier(0.22,1,0.36,1);
+  z-index:15; padding:30px 20px; display:flex; flex-direction:column; gap:14px;
+}
+#panel.visible { transform:translateX(0); }
+.panel-title { color:rgba(220,200,170,0.6); font-size:11px; letter-spacing:4px; margin-bottom:10px; }
+.panel-btn {
+  background:rgba(30,25,20,0.6); border:1px solid rgba(255,180,80,0.25);
+  color:rgba(230,220,205,0.85); padding:12px 14px; font-family:inherit; font-size:12px;
+  letter-spacing:1px; border-radius:6px; cursor:pointer; text-align:left;
+}
+.panel-btn:hover { background:rgba(80,60,30,0.5); border-color:rgba(255,200,100,0.6); }
+.panel-btn.off { opacity:0.5; }
+.panel-footer { margin-top:auto; color:rgba(120,110,95,0.4); font-size:10px; letter-spacing:2px; text-align:center; }
+#debugBox {
+  position:fixed; top:20px; right:280px; color:#6bff9e; font-size:11px;
+  background:rgba(0,20,10,0.5); padding:8px 12px; border-radius:6px; z-index:999; max-width:300px;
+}
+#errorBox {
+  position:fixed; top:20px; left:20px; color:#ff8a8a; font-size:12px;
+  background:rgba(30,0,0,0.75); padding:12px 16px; border-radius:6px;
+  border:1px solid rgba(255,100,100,0.4); z-index:999; max-width:600px;
+  white-space:pre-wrap; display:none; line-height:1.5;
+}
+
+/* ============ Painel de log / transcrição ============ */
+#logPanel {
+  position:fixed; bottom:14%; left:50%; transform:translateX(-50%);
+  width:min(640px, 82vw); max-height:150px; overflow:hidden;
+  display:flex; flex-direction:column-reverse; gap:6px;
+  font-size:13px; text-align:center; z-index:10; pointer-events:none;
+}
+#logPanel .linha {
+  animation: fadeOutLinha 9s forwards;
+  text-shadow:0 0 8px rgba(0,0,0,0.8);
+}
+#logPanel .linha.voce { color:#7dd3fc; }
+#logPanel .linha.jarvis { color:#e0a8ff; }
+#logPanel .linha.sistema { color:#8890a0; font-size:11px; }
+@keyframes fadeOutLinha {
+  0%{ opacity:1; }
+  75%{ opacity:1; }
+  100%{ opacity:0; }
+}
+
+/* ============ Input de comando por texto ============ */
+#cmdInputBox {
+  position:fixed; bottom:3%; left:50%; transform:translateX(-50%) translateY(20px);
+  opacity:0; pointer-events:none; transition:opacity 0.25s, transform 0.25s; z-index:30;
+}
+#cmdInputBox.visible { opacity:1; transform:translateX(-50%) translateY(0); pointer-events:auto; }
+#cmdInput {
+  width:420px; background:rgba(10,10,15,0.85); border:1px solid rgba(180,140,255,0.4);
+  color:#e8e0ff; font-family:inherit; font-size:13px; padding:10px 14px; border-radius:8px;
+  outline:none;
+}
+#cmdInput::placeholder { color:rgba(180,170,200,0.4); }
+#btnTexto { position:fixed; top:20px; left:20px; z-index:40; }
+body.modo-texto #logPanel { top:22%; bottom:15%; max-height:none; overflow-y:auto; pointer-events:auto; text-align:left; padding:18px; background:rgba(0,0,0,.8); border-radius:10px; }
+body.modo-texto #logPanel .linha { animation:none; white-space:pre-wrap; overflow-wrap:anywhere; }
+body.modo-texto #cmdInput { width:min(640px,82vw); }
+body.modo-texto #statusText { bottom:10%; letter-spacing:2px; }
+</style>
+</head>
+<body>
+<canvas id="glCanvas"></canvas>
+<div id="vignette"></div>
+<div id="statusText">EM ESPERA</div>
+<button class="panel-btn" id="btnTexto">⌨️ MODO TEXTO</button>
+<div id="logPanel"></div>
+<div id="cmdInputBox"><label class="sr-only" for="cmdInput">Comando para o JARVIS</label><textarea id="cmdInput" rows="2" maxlength="6000" placeholder="Digite um comando. Enter envia; Shift+Enter pula linha."></textarea><button id="btnEnviar" title="Enviar comando">Enviar ↵</button><div class="input-hint"><span id="atividadeTexto">Pronto para ajudar</span><span>Ctrl+K · comandos</span></div></div>
+<div id="hoverZone"></div>
+<div id="panel">
+  <div class="panel-title">CONTROLES</div>
+  <button class="panel-btn" id="btnMic">🎙️ MIC: LIGADO</button>
+  <button class="panel-btn" id="btnVoz">🔊 VOZ: LIGADA</button>
+  <button class="panel-btn" id="btnApps">🔄 ATUALIZAR APPS</button>
+  <div class="panel-footer">JARVIS · CENTRAL LOCAL</div>
+</div>
+<div id="debugBox">carregando...</div>
+<div id="errorBox"></div>
+<button class="panel-btn" id="btnCentral">CENTRAL <span>Ctrl+K</span></button>
+<div id="windowActions"><button id="btnMinimizar" title="Minimizar">—</button><button id="btnSair" title="Encerrar JARVIS">×</button></div>
+<div id="centralOverlay" hidden>
+  <section id="central" role="dialog" aria-modal="true" aria-labelledby="centralTitulo">
+    <header><div><div class="eyebrow">SEU ASSISTENTE / SUA ROTINA</div><h1 id="centralTitulo">Central JARVIS</h1></div><button id="fecharCentral" aria-label="Fechar central">×</button></header>
+    <nav aria-label="Seções da central"><button data-secao="comandos" class="ativo">Comandos</button><button data-secao="agenda">Agenda</button><button data-secao="notas">Notas & memória</button><button data-secao="sistema">Sistema</button><button data-secao="voz">Voz</button></nav>
+    <div id="centralConteudo">
+      <section data-pagina="comandos"><label for="buscaComandos">O que vamos fazer?</label><input id="buscaComandos" placeholder="Busque uma capacidade: notas, timer, Brave…" autocomplete="off"><p class="muted">Escolha um exemplo para editar antes de enviar. Os comandos de agenda, notas e cálculo funcionam sem IA.</p><div id="listaComandos" class="grade"></div></section>
+      <section data-pagina="agenda" hidden><div class="section-heading"><h2>Tarefas</h2><button data-preencher="Nova tarefa: ">+ Nova tarefa</button></div><div id="listaTarefas" class="lista"></div><div class="section-heading"><h2>Lembretes & foco</h2><button data-preencher="Me lembre em 10 minutos de ">+ Lembrete</button></div><p class="muted">Avisos enquanto o JARVIS estiver aberto. Atrasados aparecem no próximo início.</p><div id="listaLembretes" class="lista"></div><div class="acoes"><button data-comando="Iniciar pomodoro">Iniciar Pomodoro · 25/5</button><button data-comando="Cancelar pomodoro">Cancelar Pomodoro</button><button data-comando="Exportar agenda">Exportar agenda</button></div></section>
+      <section data-pagina="notas" hidden><div class="section-heading"><h2>Suas notas</h2><button data-preencher="Anote: ">+ Nova nota</button></div><div id="listaNotas" class="lista"></div><div class="section-heading"><h2>Preferências lembradas</h2></div><p class="muted">Salvas somente quando você pede. São usadas como contexto nas conversas com a IA.</p><div id="listaMemoria" class="lista"></div></section>
+      <section data-pagina="sistema" hidden><h2>Seu computador</h2><div id="metricas" class="grade"></div><h2>Integrações</h2><div id="listaIntegracoes" class="lista"></div><div class="acoes"><button data-comando="Diagnóstico do PC">Diagnóstico completo</button><button data-comando="Processos pesados">Maior consumo de RAM</button></div><p class="muted" id="totalFerramentas"></p></section>
+      <section data-pagina="voz" hidden><h2>Escolha como o JARVIS fala</h2><p class="muted">Vozes do Windows funcionam offline. Para Piper, coloque os arquivos .onnx e .onnx.json na pasta vozes ou configure PIPER_VOICE_MODEL.</p><label for="seletorVoz">Voz local</label><select id="seletorVoz"><option>Carregando vozes…</option></select><label for="velocidadeVoz">Velocidade das vozes Windows</label><input id="velocidadeVoz" type="range" min="-4" max="4" step="1" value="0"><div class="acoes"><button id="amostraVoz">Ouvir amostra</button><button id="pararVoz">Parar fala</button><button id="atualizarVozes">Atualizar vozes</button></div><p class="muted">A amostra só toca quando você clica. No modo texto, as respostas normais ficam silenciosas.</p></section>
+    </div>
+    <footer><span id="relogioCentral"></span><span>Dados salvos neste computador</span></footer>
+  </section>
+</div>
+<div id="confirmacaoCard" role="alertdialog" aria-labelledby="confirmacaoMensagem" hidden><strong id="confirmacaoMensagem"></strong><span id="confirmacaoTempo"></span><div class="acoes"><button id="confirmarSim">Confirmar</button><button id="confirmarNao">Cancelar</button></div></div>
+<div id="avisoLembrete" role="status" hidden><span id="textoLembrete"></span><div class="acoes"><button id="adiarAviso">+5 minutos</button><button id="concluirAviso">Concluir</button></div></div>
+
+<script>
+function mostrarErro(msg) {
+  const box = document.getElementById('errorBox');
+  box.textContent = "⚠️ ERRO\n\n" + msg;
+  box.style.display = 'block';
+  console.error(msg);
+}
+
+try {
+
+const canvas = document.getElementById('glCanvas');
+let gl = canvas.getContext('webgl2', {alpha:false}) || canvas.getContext('webgl', {alpha:false});
+if (!gl) throw new Error("WebGL indisponível.");
+gl.disable(gl.DEPTH_TEST);
+gl.disable(gl.BLEND);
+
+// ============================================================
+// Utilitários de shader
+// ============================================================
+function compileShader(src, type, label) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, src);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(shader);
+    throw new Error(`Falha ao compilar shader [${label}]:\n${log}`);
+  }
+  return shader;
+}
+function createProgram(vsSrc, fsSrc, label) {
+  const program = gl.createProgram();
+  gl.attachShader(program, compileShader(vsSrc, gl.VERTEX_SHADER, label + ' VS'));
+  gl.attachShader(program, compileShader(fsSrc, gl.FRAGMENT_SHADER, label + ' FS'));
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error(`Falha ao linkar programa [${label}]:\n${gl.getProgramInfoLog(program)}`);
+  }
+  return program;
+}
+
+// ============================================================
+// GLSL comuns
+// ============================================================
+const NOISE_GLSL = `
+vec3 mod289(vec3 x){ return x - floor(x*(1.0/289.0))*289.0; }
+vec2 mod289(vec2 x){ return x - floor(x*(1.0/289.0))*289.0; }
+vec3 permute(vec3 x){ return mod289(((x*34.0)+1.0)*x); }
+float snoise(vec2 v){
+  const vec4 C = vec4(0.211324865405187,0.366025403784439,-0.577350269189626,0.024390243902439);
+  vec2 i = floor(v + dot(v, C.yy));
+  vec2 x0 = v - i + dot(i, C.xx);
+  vec2 i1 = (x0.x > x0.y) ? vec2(1.0,0.0) : vec2(0.0,1.0);
+  vec4 x12 = x0.xyxy + C.xxzz;
+  x12.xy -= i1;
+  i = mod289(i);
+  vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));
+  vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
+  m = m*m; m = m*m;
+  vec3 x = 2.0*fract(p*C.www) - 1.0;
+  vec3 h = abs(x) - 0.5;
+  vec3 ox = floor(x + 0.5);
+  vec3 a0 = x - ox;
+  m *= 1.79284291400159 - 0.85373472095314*(a0*a0+h*h);
+  vec3 g;
+  g.x = a0.x*x0.x + h.x*x0.y;
+  g.yz = a0.yz*x12.xz + h.yz*x12.yw;
+  return 130.0*dot(m,g);
+}
+float fbm(vec2 p){
+  float v=0.0, a=0.5;
+  for(int i=0;i<5;i++){ v+=a*snoise(p); p*=2.0; a*=0.5; }
+  return v;
+}
+`;
+
+const HASH_GLSL = `
+float hash11(float p){
+  p = fract(p*0.1031);
+  p *= p + 33.33;
+  p *= p + p;
+  return fract(p);
+}
+`;
+
+const THERMAL_GLSL = `
+vec3 thermalRamp(float t, vec3 hot, vec3 cool){
+  vec3 white = vec3(1.0,1.0,0.98);
+  vec3 midHot = mix(hot, cool, 0.35);
+  vec3 dark = cool*0.10;
+  float t1 = smoothstep(0.86,1.0,t);
+  float t2 = smoothstep(0.55,0.86,t);
+  float t3 = smoothstep(0.22,0.55,t);
+  vec3 c = dark;
+  c = mix(c, cool, t3);
+  c = mix(c, midHot, t2);
+  c = mix(c, mix(hot, white, 0.5), t1);
+  return c;
+}
+`;
+
+const PIXEL_TO_CLIP_GLSL = `
+vec4 pixelToClip(vec2 pixelPos, vec2 resolution){
+  vec2 zeroToOne = pixelPos / resolution;
+  vec2 clip = zeroToOne*2.0 - 1.0;
+  clip.y = -clip.y;
+  return vec4(clip, 0.0, 1.0);
+}
+`;
+
+// ============================================================
+// FBOs (bloom)
+// ============================================================
+function createFBO(w,h){
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,tex,0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  return {fbo,tex,w,h};
+}
+let sceneFBO, bloomFBO_A, bloomFBO_B;
+function setupFBOs(){
+  if (sceneFBO){ gl.deleteFramebuffer(sceneFBO.fbo); gl.deleteTexture(sceneFBO.tex); }
+  if (bloomFBO_A){ gl.deleteFramebuffer(bloomFBO_A.fbo); gl.deleteTexture(bloomFBO_A.tex); }
+  if (bloomFBO_B){ gl.deleteFramebuffer(bloomFBO_B.fbo); gl.deleteTexture(bloomFBO_B.tex); }
+  const w = canvas.width, h = canvas.height;
+  const bw = Math.max(1, Math.floor(w/3)), bh = Math.max(1, Math.floor(h/3));
+  sceneFBO = createFBO(w,h);
+  bloomFBO_A = createFBO(bw,bh);
+  bloomFBO_B = createFBO(bw,bh);
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  setupFBOs();
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ============================================================
+// util genérico
+// ============================================================
+function makeBuf(arr){
+  const b = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arr), gl.STATIC_DRAW);
+  return b;
+}
+function bindAttrib(program, name, buf, size){
+  const loc = gl.getAttribLocation(program, name);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+}
+function lerp(a,b,t){ return a+(b-a)*t; }
+function lerpArr(a,b,t){ return [lerp(a[0],b[0],t), lerp(a[1],b[1],t), lerp(a[2],b[2],t)]; }
+
+// ============================================================
+// PROGRAMA 1 — Núcleo + Corona + Espículas
+// ============================================================
+const coreVS = `
+attribute vec2 aPos;
+void main(){ gl_Position = vec4(aPos,0.0,1.0); }
+`;
+const coreFS = `
+precision highp float;
+uniform vec2 uResolution;
+uniform vec2 uCenter;
+uniform float uRadius;
+uniform float uTime;
+uniform float uAudioLevel;
+uniform vec3 uCoreColor;
+uniform vec3 uOuterColor;
+${NOISE_GLSL}
+${HASH_GLSL}
+${THERMAL_GLSL}
+void main(){
+  vec2 p = (gl_FragCoord.xy - uCenter) / uRadius;
+
+  float dirAsym = smoothstep(-1.4, 1.4, p.x*0.8 - p.y*0.5);
+  float compactness = mix(0.75, 1.28, dirAsym);
+  vec2 pWarp = p * compactness;
+
+  float r = length(p);
+  float angle = atan(p.y, p.x);
+
+  vec2 warpP = pWarp * 1.55 + vec2(-0.4, 0.3);
+  vec2 q = vec2(fbm(warpP + uTime*0.05), fbm(warpP + vec2(5.2,1.3) - uTime*0.04));
+  vec2 r2 = vec2(
+    fbm(warpP + 4.0*q + vec2(1.7,9.2) + uTime*0.22),
+    fbm(warpP + 4.0*q + vec2(8.3,2.8) + uTime*0.17)
+  );
+  float plasma = fbm(warpP + 4.0*r2);
+  plasma = plasma*0.5 + 0.5;
+
+  float coronaMask = smoothstep(1.9, 0.12, r) * smoothstep(0.0, 0.28, r);
+  float corona = plasma * coronaMask;
+
+  float rayTotal = 0.0;
+  const float RAY_SLOTS = 56.0;
+  float slotWidth = 6.2831853 / RAY_SLOTS;
+  float rawSlot = angle / slotWidth;
+  float slotBase = floor(rawSlot);
+  for (int di = 0; di < 3; di++) {
+    float slot = slotBase - 1.0 + float(di);
+    float rnd1 = hash11(slot*3.17);
+    float rnd2 = hash11(slot*7.91+4.0);
+    float rnd3 = hash11(slot*1.53+9.0);
+    float rnd4 = hash11(slot*5.71+2.0);
+    float rnd5 = hash11(slot*2.23+7.0);
+    float slotAngle = (slot+0.5)*slotWidth + (rnd1-0.5)*slotWidth*0.8;
+    float angDiff = atan(sin(angle-slotAngle), cos(angle-slotAngle));
+
+    float concentration = 0.35 + 0.65*pow(0.5+0.5*cos(slotAngle-0.78), 2.0);
+    if (rnd5 > concentration) continue;
+
+    float rayLen = mix(0.5, 2.7, rnd2*rnd2);
+    float rayWidth = mix(0.012, 0.045, rnd3);
+    float brightness = mix(0.25, 1.0, rnd4);
+    float shimmer = 0.6 + 0.4*sin(uTime*(1.0+rnd1*2.0) + slot*12.9);
+
+    float widthFalloff = exp(-pow(angDiff/rayWidth, 2.0));
+    float lengthT = r / rayLen;
+    float fadeType = step(0.5, hash11(slot*9.13));
+    float lengthFade = mix(smoothstep(1.0,0.0,lengthT), smoothstep(1.0,0.82,lengthT), fadeType);
+    float innerCut = smoothstep(0.22, 0.42, r);
+    float gasNoise = 0.6 + 0.4*plasma;
+
+    rayTotal += widthFalloff*lengthFade*innerCut*brightness*shimmer*gasNoise;
+  }
+  rayTotal = clamp(rayTotal, 0.0, 1.8);
+
+  float coreFalloff = mix(2.6, 3.4, dirAsym);
+  float core = exp(-pow(r/0.26,2.0) * coreFalloff / (1.0+uAudioLevel*0.5));
+  float coreHot = exp(-pow(r/0.14,2.0) * coreFalloff);
+
+  float thermalT = clamp(corona*1.3 + core*0.6, 0.0, 1.0);
+  vec3 color = thermalRamp(thermalT, uCoreColor, uOuterColor) * (corona*0.9 + 0.15);
+  color += thermalRamp(0.95, uCoreColor, uOuterColor) * rayTotal * 1.1;
+  color += vec3(1.0) * coreHot * 1.6;
+  color += mix(uCoreColor, vec3(1.0), 0.6) * core * 1.2;
+
+  float alpha = clamp(corona*0.9 + rayTotal*0.9 + core*1.3, 0.0, 1.0);
+  gl_FragColor = vec4(color, alpha);
+}
+`;
+const coreProgram = createProgram(coreVS, coreFS, 'CORE');
+const quadBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+function bindQuad(program){
+  const loc = gl.getAttribLocation(program, 'aPos');
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+}
+const coreU = {
+  uResolution: gl.getUniformLocation(coreProgram, 'uResolution'),
+  uCenter: gl.getUniformLocation(coreProgram, 'uCenter'),
+  uRadius: gl.getUniformLocation(coreProgram, 'uRadius'),
+  uTime: gl.getUniformLocation(coreProgram, 'uTime'),
+  uAudioLevel: gl.getUniformLocation(coreProgram, 'uAudioLevel'),
+  uCoreColor: gl.getUniformLocation(coreProgram, 'uCoreColor'),
+  uOuterColor: gl.getUniformLocation(coreProgram, 'uOuterColor'),
+};
+
+// ============================================================
+// PROGRAMA 2 — Anéis com pseudo-profundidade 3D
+// ============================================================
+const SEGMENTS = 128;
+const ringVS = `
+attribute float aAngleT;
+attribute float aSide;
+uniform vec2 uResolution;
+uniform vec2 uCenter;
+uniform float uRadius;
+uniform float uRingRadiusFactor;
+uniform float uSquish;
+uniform float uRotation;
+uniform float uThickness;
+uniform float uTime;
+varying float vSide;
+varying float vAngle;
+varying float vZ;
+varying float vDistFromCenter;
+${PIXEL_TO_CLIP_GLSL}
+void main(){
+  float theta = aAngleT * 6.2831853;
+  float jitter = 1.0 + 0.035*sin(theta*8.0 + uTime*1.3) + 0.02*sin(theta*17.0 - uTime*0.7);
+  float radius = uRadius * uRingRadiusFactor * jitter;
+
+  vec2 base = vec2(cos(theta), sin(theta)*uSquish);
+  float c = cos(uRotation), s = sin(uRotation);
+  vec2 rotated = vec2(base.x*c - base.y*s, base.x*s + base.y*c);
+
+  vec2 normalBase = normalize(vec2(cos(theta), sin(theta)*uSquish*uSquish));
+  vec2 normalRot = vec2(normalBase.x*c - normalBase.y*s, normalBase.x*s + normalBase.y*c);
+
+  vec2 pos = uCenter + rotated*radius + normalRot*aSide*uThickness;
+
+  float tiltFactor = sqrt(max(0.0, 1.0 - uSquish*uSquish));
+  vZ = sin(theta) * tiltFactor;
+  vSide = aSide;
+  vAngle = theta;
+  vDistFromCenter = length(pos - uCenter);
+
+  gl_Position = pixelToClip(pos, uResolution);
+}
+`;
+const ringFS = `
+precision highp float;
+uniform vec3 uCoreColor;
+uniform vec3 uOuterColor;
+uniform float uOpacity;
+uniform float uTime;
+uniform float uRadius;
+varying float vSide;
+varying float vAngle;
+varying float vZ;
+varying float vDistFromCenter;
+${HASH_GLSL}
+void main(){
+  float falloff = exp(-pow(vSide, 2.0) * 3.5);
+  float shimmer = 0.65 + 0.35*sin(vAngle*23.0 + uTime*2.0);
+
+  float frayNoise = hash11(floor(vAngle*40.0) + floor(uTime*2.0)*0.001);
+  float fray = smoothstep(0.15, 0.5, frayNoise + (1.0-abs(vSide))*0.3);
+
+  float backFade = mix(1.0, 0.3, smoothstep(0.0, -1.0, vZ));
+  float nearCoreObscure = smoothstep(uRadius*0.55, uRadius*1.1, vDistFromCenter);
+  float obscure = mix(nearCoreObscure, 1.0, step(0.0, vZ));
+
+  vec3 color = mix(uOuterColor, uCoreColor, 0.3);
+  float alpha = falloff * uOpacity * shimmer * backFade * obscure * fray;
+  gl_FragColor = vec4(color*alpha, alpha);
+}
+`;
+const ringProgram = createProgram(ringVS, ringFS, 'RING');
+const ringAngles = [], ringSides = [];
+for (let i = 0; i <= SEGMENTS; i++) {
+  const t = i / SEGMENTS;
+  ringAngles.push(t, t);
+  ringSides.push(-1, 1);
+}
+const ringAngleBuf = makeBuf(ringAngles);
+const ringSideBuf = makeBuf(ringSides);
+const ringU = {
+  uResolution: gl.getUniformLocation(ringProgram, 'uResolution'),
+  uCenter: gl.getUniformLocation(ringProgram, 'uCenter'),
+  uRadius: gl.getUniformLocation(ringProgram, 'uRadius'),
+  uRingRadiusFactor: gl.getUniformLocation(ringProgram, 'uRingRadiusFactor'),
+  uSquish: gl.getUniformLocation(ringProgram, 'uSquish'),
+  uRotation: gl.getUniformLocation(ringProgram, 'uRotation'),
+  uThickness: gl.getUniformLocation(ringProgram, 'uThickness'),
+  uTime: gl.getUniformLocation(ringProgram, 'uTime'),
+  uCoreColor: gl.getUniformLocation(ringProgram, 'uCoreColor'),
+  uOuterColor: gl.getUniformLocation(ringProgram, 'uOuterColor'),
+  uOpacity: gl.getUniformLocation(ringProgram, 'uOpacity'),
+};
+const ANEIS = [
+  { fator: 1.15, squish: 0.42, vel: 0.15,  sentido: 1,  opacidade: 0.5, espessuraFactor: 0.045 },
+  { fator: 1.55, squish: 0.30, vel: 0.09,  sentido: -1, opacidade: 0.34, espessuraFactor: 0.035 },
+  { fator: 2.05, squish: 0.20, vel: 0.05,  sentido: 1,  opacidade: 0.2, espessuraFactor: 0.028 },
+];
+
+// ============================================================
+// PROGRAMA 3 — Halo de partículas
+// ============================================================
+const NUM_PARTICULAS = 800;
+const partVS = `
+attribute float aBaseAngle;
+attribute float aDistPhase;
+attribute float aDistSpeed;
+attribute float aDriftSpeed;
+attribute float aSize;
+attribute float aPhase;
+attribute float aTwinkleSpeed;
+attribute float aShapeSeed;
+uniform vec2 uResolution;
+uniform vec2 uCenter;
+uniform float uRadius;
+uniform float uTime;
+uniform float uAudioLevel;
+varying float vTwinkle;
+varying float vThermalT;
+varying float vShapeSeed;
+varying float vAlphaFade;
+${NOISE_GLSL}
+${PIXEL_TO_CLIP_GLSL}
+void main(){
+  float angle = aBaseAngle + uTime*aDriftSpeed;
+  float distT = fract(aDistPhase + uTime*aDistSpeed);
+  float distFactor = mix(0.65, 4.2, distT);
+
+  float clump = fbm(vec2(cos(aBaseAngle), sin(aBaseAngle))*2.4 + aBaseAngle*0.3);
+  float visibility = smoothstep(-0.35, 0.35, clump);
+
+  float edgeFadeIn = smoothstep(0.0, 0.08, distT);
+  float edgeFadeOut = smoothstep(1.0, 0.85, distT);
+  vAlphaFade = edgeFadeIn * edgeFadeOut * visibility;
+
+  float distJitter = 1.0 + 0.10*sin(uTime*0.5 + aPhase);
+  float dist = uRadius * distFactor * distJitter;
+  vec2 pos = uCenter + vec2(cos(angle), sin(angle)*0.55) * dist;
+
+  vTwinkle = 0.4 + 0.6*max(0.0, sin(uTime*aTwinkleSpeed + aPhase*3.0));
+  vThermalT = 1.0 - smoothstep(0.5, 4.0, distFactor);
+  vShapeSeed = aShapeSeed;
+
+  gl_Position = pixelToClip(pos, uResolution);
+  gl_PointSize = aSize * (1.0 + uAudioLevel*1.1) * mix(0.6, 1.3, visibility);
+}
+`;
+const partFS = `
+precision highp float;
+uniform vec3 uCoreColor;
+uniform vec3 uOuterColor;
+varying float vTwinkle;
+varying float vThermalT;
+varying float vShapeSeed;
+varying float vAlphaFade;
+${THERMAL_GLSL}
+void main(){
+  vec2 d = gl_PointCoord - 0.5;
+  float dist = length(d)*2.0;
+  float ang = atan(d.y, d.x);
+  float jag = 0.82 + 0.18*sin(ang*5.0+vShapeSeed*20.0) + 0.08*sin(ang*11.0-vShapeSeed*7.0);
+  float edge = smoothstep(jag, jag-0.22, dist);
+  float alpha = edge * vTwinkle * vAlphaFade;
+  vec3 color = thermalRamp(vThermalT, uCoreColor, uOuterColor);
+  gl_FragColor = vec4(color*alpha, alpha);
+}
+`;
+const partProgram = createProgram(partVS, partFS, 'PARTICLES');
+const partBaseAngle=[], partDistPhase=[], partDistSpeed=[], partDrift=[], partSize=[], partPhase=[], partTwinkleSpeed=[], partShapeSeed=[];
+for (let i=0;i<NUM_PARTICULAS;i++){
+  partBaseAngle.push(Math.random()*Math.PI*2);
+  partDistPhase.push(Math.random());
+  partDistSpeed.push(0.015 + Math.random()*0.05);
+  partDrift.push((Math.random()-0.5)*0.12);
+  partSize.push(1.0 + Math.random()*Math.random()*5.0);
+  partPhase.push(Math.random()*Math.PI*2);
+  partTwinkleSpeed.push(1.0 + Math.random()*2.5);
+  partShapeSeed.push(Math.random()*100.0);
+}
+const partBufs = {
+  aBaseAngle: makeBuf(partBaseAngle),
+  aDistPhase: makeBuf(partDistPhase),
+  aDistSpeed: makeBuf(partDistSpeed),
+  aDriftSpeed: makeBuf(partDrift),
+  aSize: makeBuf(partSize),
+  aPhase: makeBuf(partPhase),
+  aTwinkleSpeed: makeBuf(partTwinkleSpeed),
+  aShapeSeed: makeBuf(partShapeSeed),
+};
+const partU = {
+  uResolution: gl.getUniformLocation(partProgram,'uResolution'),
+  uCenter: gl.getUniformLocation(partProgram,'uCenter'),
+  uRadius: gl.getUniformLocation(partProgram,'uRadius'),
+  uTime: gl.getUniformLocation(partProgram,'uTime'),
+  uAudioLevel: gl.getUniformLocation(partProgram,'uAudioLevel'),
+  uCoreColor: gl.getUniformLocation(partProgram,'uCoreColor'),
+  uOuterColor: gl.getUniformLocation(partProgram,'uOuterColor'),
+};
+
+// ============================================================
+// PROGRAMA 4 — Esfera de contenção: ICOSAEDRO TRUNCADO
+// (pentágonos + hexágonos, padrão "bola de futebol")
+// ============================================================
+function buildTruncatedIcosahedron(){
+  const t = (1+Math.sqrt(5))/2;
+  function normalize(v){
+    const len = Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
+    return [v[0]/len, v[1]/len, v[2]/len];
+  }
+  let vertices = [
+    [-1,t,0],[1,t,0],[-1,-t,0],[1,-t,0],
+    [0,-1,t],[0,1,t],[0,-1,-t],[0,1,-t],
+    [t,0,-1],[t,0,1],[-t,0,-1],[-t,0,1]
+  ].map(normalize);
+  const faces = [
+    [0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],
+    [1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],
+    [3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],
+    [4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]
+  ];
+
+  const truncCache = {};
+  function getTrunc(a,b){
+    const key = a+'>'+b;
+    if (truncCache[key]) return truncCache[key];
+    const va = vertices[a], vb = vertices[b];
+    const p = normalize([
+      va[0] + (vb[0]-va[0])/3,
+      va[1] + (vb[1]-va[1])/3,
+      va[2] + (vb[2]-va[2])/3
+    ]);
+    truncCache[key] = p;
+    return p;
+  }
+
+  const hexagons = faces.map(([a,b,c])=>[
+    getTrunc(a,b), getTrunc(b,a),
+    getTrunc(b,c), getTrunc(c,b),
+    getTrunc(c,a), getTrunc(a,c)
+  ]);
+
+  const pentagons = vertices.map((v,vi)=>{
+    const adjFaces = faces.filter(f=>f.includes(vi));
+    const pts = adjFaces.map(f=>{
+      const others = f.filter(x=>x!==vi);
+      const p1 = getTrunc(vi, others[0]);
+      const p2 = getTrunc(vi, others[1]);
+      return normalize([(p1[0]+p2[0])/2,(p1[1]+p2[1])/2,(p1[2]+p2[2])/2]);
+    });
+    let tangent = Math.abs(v[0]) < 0.9 ? [1,0,0] : [0,1,0];
+    const d = v[0]*tangent[0]+v[1]*tangent[1]+v[2]*tangent[2];
+    tangent = normalize([tangent[0]-v[0]*d, tangent[1]-v[1]*d, tangent[2]-v[2]*d]);
+    const bitangent = [
+      v[1]*tangent[2]-v[2]*tangent[1],
+      v[2]*tangent[0]-v[0]*tangent[2],
+      v[0]*tangent[1]-v[1]*tangent[0]
+    ];
+    pts.sort((p1,p2)=>{
+      const a1 = Math.atan2(p1[0]*bitangent[0]+p1[1]*bitangent[1]+p1[2]*bitangent[2], p1[0]*tangent[0]+p1[1]*tangent[1]+p1[2]*tangent[2]);
+      const a2 = Math.atan2(p2[0]*bitangent[0]+p2[1]*bitangent[1]+p2[2]*bitangent[2], p2[0]*tangent[0]+p2[1]*tangent[1]+p2[2]*tangent[2]);
+      return a1-a2;
+    });
+    return pts;
+  });
+
+  return { hexagons, pentagons };
+}
+function polygonsToLines(polygons){
+  const data=[], seeds=[];
+  polygons.forEach(poly=>{
+    const seed = Math.random()*1000;
+    for(let i=0;i<poly.length;i++){
+      const a = poly[i], b = poly[(i+1)%poly.length];
+      data.push(a[0],a[1],a[2], b[0],b[1],b[2]);
+      seeds.push(seed, seed);
+    }
+  });
+  return {data, seeds};
+}
+
+const globeVS = `
+attribute vec3 aPos;
+attribute float aSeed;
+uniform mat3 uRotation;
+uniform vec2 uResolution;
+uniform vec2 uCenter;
+uniform float uRadius;
+varying float vDepth;
+varying float vSeed;
+${PIXEL_TO_CLIP_GLSL}
+void main(){
+  vec3 rotated = uRotation * aPos;
+  float persp = 1.0 / (1.0 + rotated.z*0.4);
+  vec2 pos = uCenter + rotated.xy * uRadius * persp;
+  vDepth = rotated.z;
+  vSeed = aSeed;
+  gl_Position = pixelToClip(pos, uResolution);
+}
+`;
+const globeFS = `
+precision highp float;
+uniform vec3 uColor;
+uniform float uTime;
+uniform float uAlphaMul;
+varying float vDepth;
+varying float vSeed;
+${HASH_GLSL}
+void main(){
+  float depthFade = mix(0.06, 1.0, smoothstep(-1.0, 0.6, vDepth));
+  float flickerSlot = floor(uTime*2.5 + vSeed);
+  float flicker = step(0.05, hash11(vSeed*13.7 + flickerSlot));
+  float alpha = depthFade * flicker * uAlphaMul;
+  gl_FragColor = vec4(uColor*alpha, alpha);
+}
+`;
+const globeProgram = createProgram(globeVS, globeFS, 'GLOBE');
+const globeU = {
+  uRotation: gl.getUniformLocation(globeProgram,'uRotation'),
+  uResolution: gl.getUniformLocation(globeProgram,'uResolution'),
+  uCenter: gl.getUniformLocation(globeProgram,'uCenter'),
+  uRadius: gl.getUniformLocation(globeProgram,'uRadius'),
+  uColor: gl.getUniformLocation(globeProgram,'uColor'),
+  uTime: gl.getUniformLocation(globeProgram,'uTime'),
+  uAlphaMul: gl.getUniformLocation(globeProgram,'uAlphaMul'),
+};
+
+const { hexagons, pentagons } = buildTruncatedIcosahedron();
+const hexLines = polygonsToLines(hexagons);
+const pentLines = polygonsToLines(pentagons);
+
+const allPoints = [];
+hexagons.forEach(p=>allPoints.push(...p));
+pentagons.forEach(p=>allPoints.push(...p));
+const spikeData=[], spikeSeeds=[];
+allPoints.forEach(p=>{
+  if (Math.random() < 0.10) {
+    const len = 1.08 + Math.random()*0.35;
+    spikeData.push(p[0],p[1],p[2], p[0]*len,p[1]*len,p[2]*len);
+    const seed = Math.random()*1000;
+    spikeSeeds.push(seed, seed);
+  }
+});
+
+const hexBuf = makeBuf(hexLines.data);
+const hexSeedBuf = makeBuf(hexLines.seeds);
+const pentBuf = makeBuf(pentLines.data);
+const pentSeedBuf = makeBuf(pentLines.seeds);
+const spikeBuf = makeBuf(spikeData);
+const spikeSeedBuf = makeBuf(spikeSeeds);
+const hexCount = hexLines.data.length/3;
+const pentCount = pentLines.data.length/3;
+const spikeCount = spikeData.length/3;
+
+function matMul3(a,b){
+  const r = new Array(9).fill(0);
+  for(let c=0;c<3;c++) for(let row=0;row<3;row++){
+    let sum=0;
+    for(let k=0;k<3;k++) sum += a[k*3+row]*b[c*3+k];
+    r[c*3+row]=sum;
+  }
+  return r;
+}
+function rotY(a){ const c=Math.cos(a),s=Math.sin(a); return [c,0,-s, 0,1,0, s,0,c]; }
+function rotX(a){ const c=Math.cos(a),s=Math.sin(a); return [1,0,0, 0,c,s, 0,-s,c]; }
+
+function drawGlobe(w,h,cx,cy,globeRadius,elapsed,effectiveAudio,pulseAmount,coreColor,outerColor){
+  const spinSpeed = 0.12 + effectiveAudio*0.4 + pulseAmount*0.2;
+  const wobble = Math.sin(elapsed*0.6)*0.05 + effectiveAudio*0.12;
+  const rotation = matMul3(rotY(elapsed*spinSpeed), rotX(0.35 + wobble));
+
+  gl.useProgram(globeProgram);
+  gl.uniformMatrix3fv(globeU.uRotation, false, new Float32Array(rotation));
+  gl.uniform2f(globeU.uResolution, w, h);
+  gl.uniform2f(globeU.uCenter, cx, cy);
+  gl.uniform1f(globeU.uRadius, globeRadius);
+  gl.uniform1f(globeU.uTime, elapsed);
+
+  gl.uniform3f(globeU.uColor, outerColor[0], outerColor[1], outerColor[2]);
+  bindAttrib(globeProgram,'aPos', hexBuf, 3);
+  bindAttrib(globeProgram,'aSeed', hexSeedBuf, 1);
+  gl.uniform1f(globeU.uAlphaMul, 0.42);
+  gl.drawArrays(gl.LINES, 0, hexCount);
+
+  const jointColor = [
+    lerp(outerColor[0], coreColor[0], 0.55),
+    lerp(outerColor[1], coreColor[1], 0.55),
+    lerp(outerColor[2], coreColor[2], 0.55)
+  ];
+  gl.uniform3f(globeU.uColor, jointColor[0], jointColor[1], jointColor[2]);
+  bindAttrib(globeProgram,'aPos', pentBuf, 3);
+  bindAttrib(globeProgram,'aSeed', pentSeedBuf, 1);
+  gl.uniform1f(globeU.uAlphaMul, 0.8);
+  gl.drawArrays(gl.LINES, 0, pentCount);
+
+  gl.uniform3f(globeU.uColor, coreColor[0], coreColor[1], coreColor[2]);
+  bindAttrib(globeProgram,'aPos', spikeBuf, 3);
+  bindAttrib(globeProgram,'aSeed', spikeSeedBuf, 1);
+  gl.uniform1f(globeU.uAlphaMul, 0.9);
+  gl.drawArrays(gl.LINES, 0, spikeCount);
+}
+
+// ============================================================
+// PROGRAMA 5/6 — Blur + Composite (bloom + contraste/saturação)
+// ============================================================
+const blitVS = `attribute vec2 aPos; varying vec2 vUv; void main(){ vUv = aPos*0.5+0.5; gl_Position=vec4(aPos,0.0,1.0);}`;
+const blurFS = `
+precision highp float;
+uniform sampler2D uTex;
+uniform vec2 uDir;
+varying vec2 vUv;
+void main(){
+  vec4 sum = texture2D(uTex, vUv) * 0.227027;
+  vec2 off1 = uDir * 1.411764;
+  vec2 off2 = uDir * 3.294117;
+  sum += texture2D(uTex, vUv+off1) * 0.3162162;
+  sum += texture2D(uTex, vUv-off1) * 0.3162162;
+  sum += texture2D(uTex, vUv+off2) * 0.0702703;
+  sum += texture2D(uTex, vUv-off2) * 0.0702703;
+  gl_FragColor = sum;
+}`;
+const compositeFS = `
+precision highp float;
+uniform sampler2D uScene;
+uniform sampler2D uBloom;
+uniform float uBloomStrength;
+varying vec2 vUv;
+void main(){
+  vec4 scene = texture2D(uScene, vUv);
+  vec4 bloom = texture2D(uBloom, vUv);
+  vec3 col = scene.rgb + bloom.rgb * uBloomStrength;
+  float luma = dot(col, vec3(0.299,0.587,0.114));
+  col = mix(vec3(luma), col, 1.4);
+  col = (col - 0.5) * 1.18 + 0.5;
+  col = max(col, 0.0);
+  gl_FragColor = vec4(col, 1.0);
+}`;
+const blurProgram = createProgram(blitVS, blurFS, 'BLUR');
+const blurU = { uTex: gl.getUniformLocation(blurProgram,'uTex'), uDir: gl.getUniformLocation(blurProgram,'uDir') };
+const compositeProgram = createProgram(blitVS, compositeFS, 'COMPOSITE');
+const compositeU = {
+  uScene: gl.getUniformLocation(compositeProgram,'uScene'),
+  uBloom: gl.getUniformLocation(compositeProgram,'uBloom'),
+  uBloomStrength: gl.getUniformLocation(compositeProgram,'uBloomStrength'),
+};
+
+// ============================================================
+// Estado
+// ============================================================
+const STATE_COLORS = {
+  dormindo:    { core:[0.55,0.65,0.95], outer:[0.10,0.20,0.55], label:"EM ESPERA" },
+  ouvindo:     { core:[0.70,0.85,1.0],  outer:[0.05,0.40,1.0],  label:"OUVINDO..." },
+  processando: { core:[0.88,0.45,1.0],  outer:[0.30,0.0,0.75],  label:"PROCESSANDO..." },
+  executando:  { core:[1.0,0.95,0.75],  outer:[1.0,0.45,0.0],   label:"EXECUTANDO" },
+};
+let curCore=[...STATE_COLORS.dormindo.core], curOuter=[...STATE_COLORS.dormindo.outer];
+let tgtCore=[...curCore], tgtOuter=[...curOuter];
+let audioLevel=0, audioTarget=0;
+let curPulseAmount=0, tgtPulseAmount=0; // 0 = parado, 1 = "ouvindo" pulsando
+const statusTextEl = document.getElementById('statusText');
+
+window.setJarvisState = function(state){
+  const cfg = STATE_COLORS[state] || STATE_COLORS.dormindo;
+  tgtCore=[...cfg.core]; tgtOuter=[...cfg.outer];
+  tgtPulseAmount = (state === 'ouvindo') ? 1.0 : 0.0;
+  statusTextEl.style.opacity = 0;
+  setTimeout(()=>{ statusTextEl.textContent = cfg.label; statusTextEl.style.opacity = 1; }, 120);
+};
+window.setAudioLevel = function(level){ audioTarget = Math.max(0,Math.min(1,level)); };
+
+// ============================================================
+// Desenho da cena
+// ============================================================
+function drawScene(w,h,cx,cy,radius,elapsed,effectiveAudio,pulseAmount,curCore,curOuter){
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+
+  drawGlobe(w,h,cx,cy, radius*2.3, elapsed, effectiveAudio, pulseAmount, curCore, curOuter);
+
+  gl.useProgram(coreProgram);
+  bindQuad(coreProgram);
+  gl.uniform2f(coreU.uResolution, w, h);
+  gl.uniform2f(coreU.uCenter, cx, cy);
+  gl.uniform1f(coreU.uRadius, radius);
+  gl.uniform1f(coreU.uTime, elapsed);
+  gl.uniform1f(coreU.uAudioLevel, effectiveAudio);
+  gl.uniform3f(coreU.uCoreColor, curCore[0], curCore[1], curCore[2]);
+  gl.uniform3f(coreU.uOuterColor, curOuter[0], curOuter[1], curOuter[2]);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  gl.useProgram(ringProgram);
+  bindAttrib(ringProgram,'aAngleT', ringAngleBuf, 1);
+  bindAttrib(ringProgram,'aSide', ringSideBuf, 1);
+  gl.uniform2f(ringU.uResolution, w, h);
+  gl.uniform2f(ringU.uCenter, cx, cy);
+  gl.uniform1f(ringU.uRadius, radius);
+  gl.uniform1f(ringU.uTime, elapsed);
+  gl.uniform3f(ringU.uCoreColor, curCore[0], curCore[1], curCore[2]);
+  gl.uniform3f(ringU.uOuterColor, curOuter[0], curOuter[1], curOuter[2]);
+  ANEIS.forEach(anel=>{
+    gl.uniform1f(ringU.uRingRadiusFactor, anel.fator);
+    gl.uniform1f(ringU.uSquish, anel.squish);
+    gl.uniform1f(ringU.uRotation, elapsed*anel.vel*anel.sentido);
+    gl.uniform1f(ringU.uThickness, anel.espessuraFactor*radius + effectiveAudio*radius*0.03);
+    gl.uniform1f(ringU.uOpacity, anel.opacidade);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, (SEGMENTS+1)*2);
+  });
+
+  gl.useProgram(partProgram);
+  bindAttrib(partProgram,'aBaseAngle', partBufs.aBaseAngle, 1);
+  bindAttrib(partProgram,'aDistPhase', partBufs.aDistPhase, 1);
+  bindAttrib(partProgram,'aDistSpeed', partBufs.aDistSpeed, 1);
+  bindAttrib(partProgram,'aDriftSpeed', partBufs.aDriftSpeed, 1);
+  bindAttrib(partProgram,'aSize', partBufs.aSize, 1);
+  bindAttrib(partProgram,'aPhase', partBufs.aPhase, 1);
+  bindAttrib(partProgram,'aTwinkleSpeed', partBufs.aTwinkleSpeed, 1);
+  bindAttrib(partProgram,'aShapeSeed', partBufs.aShapeSeed, 1);
+  gl.uniform2f(partU.uResolution, w, h);
+  gl.uniform2f(partU.uCenter, cx, cy);
+  gl.uniform1f(partU.uRadius, radius);
+  gl.uniform1f(partU.uTime, elapsed);
+  gl.uniform1f(partU.uAudioLevel, effectiveAudio);
+  gl.uniform3f(partU.uCoreColor, curCore[0], curCore[1], curCore[2]);
+  gl.uniform3f(partU.uOuterColor, curOuter[0], curOuter[1], curOuter[2]);
+  gl.drawArrays(gl.POINTS, 0, NUM_PARTICULAS);
+
+  gl.disable(gl.BLEND);
+}
+
+function blurPass(srcTex, dst, dirX, dirY){
+  gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+  gl.viewport(0,0,dst.w,dst.h);
+  gl.clearColor(0,0,0,0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, srcTex);
+  gl.uniform1i(blurU.uTex, 0);
+  gl.uniform2f(blurU.uDir, dirX/dst.w, dirY/dst.h);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+// ============================================================
+// Loop principal
+// ============================================================
+const BASE_RADIUS_FACTOR = 0.32;
+const GLOBE_RADIUS_FACTOR = 2.25;
+const LISTEN_PULSE_SPEED = 3.4;
+
+let startTime = performance.now();
+function render(now){
+  const elapsed = (now-startTime)/1000;
+  curCore = lerpArr(curCore, tgtCore, 0.04);
+  curOuter = lerpArr(curOuter, tgtOuter, 0.04);
+  const audioRate = audioTarget > audioLevel ? 0.35 : 0.06;
+  audioLevel = lerp(audioLevel, audioTarget, audioRate);
+  curPulseAmount = lerp(curPulseAmount, tgtPulseAmount, 0.05);
+
+  const w = canvas.width, h = canvas.height;
+  const cx = w/2, cy = h/2;
+
+  const baseRadius = Math.min(w,h) * BASE_RADIUS_FACTOR;
+  const breathe = Math.sin(elapsed*0.5) * (baseRadius*0.035);
+  const pulseWave = Math.sin(elapsed*LISTEN_PULSE_SPEED)*0.5+0.5;
+  const listenPulse = curPulseAmount * pulseWave * (baseRadius*0.16);
+  const audioBump = audioLevel * (baseRadius*0.35);
+  const radius = baseRadius + breathe + listenPulse + audioBump;
+
+  const effectiveAudio = Math.min(1, audioLevel + curPulseAmount*pulseWave*0.5);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFBO.fbo);
+  gl.viewport(0,0,sceneFBO.w,sceneFBO.h);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  drawScene(w,h,cx,cy,radius,elapsed,effectiveAudio,curPulseAmount,curCore,curOuter);
+
+  gl.useProgram(blurProgram);
+  bindQuad(blurProgram);
+  blurPass(sceneFBO.tex, bloomFBO_A, 1.5, 0);
+  blurPass(bloomFBO_A.tex, bloomFBO_B, 0, 1.5);
+  blurPass(bloomFBO_B.tex, bloomFBO_A, 1.5, 0);
+  blurPass(bloomFBO_A.tex, bloomFBO_B, 0, 1.5);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0,0,w,h);
+  gl.clearColor(0,0,0,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(compositeProgram);
+  bindQuad(compositeProgram);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sceneFBO.tex);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, bloomFBO_B.tex);
+  gl.uniform1i(compositeU.uScene, 0);
+  gl.uniform1i(compositeU.uBloom, 1);
+  gl.uniform1f(compositeU.uBloomStrength, 1.8 + effectiveAudio*1.0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+} catch(err) {
+  mostrarErro('A animação não pôde iniciar. Os comandos continuam disponíveis. ' + (err.message || String(err)));
+}
+</script>
+<script>
+window.setJarvisState = window.setJarvisState || (estado => { document.getElementById('statusText').textContent = estado; });
+window.setAudioLevel = window.setAudioLevel || (() => {});
+
+// ============================================================
+// Painel deslizante
+// ============================================================
+const panel = document.getElementById('panel');
+const hoverZone = document.getElementById('hoverZone');
+let panelTimeout=null;
+hoverZone.addEventListener('mouseenter', ()=>{ clearTimeout(panelTimeout); panel.classList.add('visible'); });
+panel.addEventListener('mouseenter', ()=> clearTimeout(panelTimeout));
+panel.addEventListener('mouseleave', ()=>{ panelTimeout=setTimeout(()=>panel.classList.remove('visible'),400); });
+hoverZone.addEventListener('mouseleave', ()=>{ panelTimeout=setTimeout(()=>{ if(!panel.matches(':hover')) panel.classList.remove('visible'); },400); });
+
+// ============================================================
+// Painel de log / transcrição
+// ============================================================
+const logPanel = document.getElementById('logPanel');
+let modoTexto = false;
+let ocupado = false;
+const comandosRecentes = [];
+let indiceComando = -1, rascunho = '';
+function adicionarLog(quem, texto){
+  const el = document.createElement('div');
+  el.className = 'linha ' + (['voce','jarvis','sistema'].includes(quem) ? quem : 'sistema');
+  const prefixo = quem === 'voce' ? 'Você: ' : quem === 'jarvis' ? 'Jarvis: ' : '';
+  el.textContent = prefixo + texto;
+  logPanel.prepend(el);
+  setTimeout(()=> { if (!modoTexto) el.remove(); }, 9000);
+  while (logPanel.children.length > (modoTexto ? 100 : 6)) logPanel.removeChild(logPanel.lastChild);
+}
+
+// ============================================================
+// Input de comando por texto (tecla T abre, Enter envia, Esc fecha)
+// ============================================================
+const cmdInputBox = document.getElementById('cmdInputBox');
+const cmdInput = document.getElementById('cmdInput');
+document.addEventListener('keydown', (e)=>{
+  if (e.key.toLowerCase()==='t' && !['INPUT','TEXTAREA','SELECT','BUTTON'].includes(document.activeElement.tagName) && document.getElementById('centralOverlay').hidden){
+    cmdInputBox.classList.add('visible');
+    cmdInput.focus();
+    e.preventDefault();
+  } else if (e.key === 'Escape'){
+    if (document.activeElement === cmdInput){
+      if (!modoTexto) cmdInputBox.classList.remove('visible');
+      cmdInput.blur();
+    } else if (e.ctrlKey) {
+      enviarComando('sair');
+    }
+  }
+});
+function enviarTexto(){
+  const texto = cmdInput.value.trim();
+  if (!texto || ocupado) return;
+  if (!enviarComando('comando_texto', texto)) {
+    adicionarLog('sistema', 'Sem conexão. Seu texto foi mantido; tente novamente após reconectar.');
+    return;
+  }
+  if (comandosRecentes[0] !== texto) comandosRecentes.unshift(texto);
+  comandosRecentes.length = Math.min(comandosRecentes.length, 50);
+  indiceComando = -1;
+  cmdInput.value = '';
+  if (!modoTexto) { cmdInputBox.classList.remove('visible'); cmdInput.blur(); }
+}
+document.getElementById('btnEnviar').addEventListener('click', enviarTexto);
+cmdInput.addEventListener('keydown', (e)=>{
+  e.stopPropagation();
+  if (e.key === 'Enter' && !e.shiftKey){
+    e.preventDefault();
+    enviarTexto();
+  } else if (e.key === 'ArrowUp' && cmdInput.selectionStart === 0 && comandosRecentes.length) {
+    e.preventDefault();
+    if (indiceComando === -1) rascunho = cmdInput.value;
+    indiceComando = Math.min(indiceComando + 1, comandosRecentes.length - 1);
+    cmdInput.value = comandosRecentes[indiceComando];
+    cmdInput.setSelectionRange(0,0);
+  } else if (e.key === 'ArrowDown' && indiceComando >= 0) {
+    e.preventDefault(); indiceComando--;
+    cmdInput.value = indiceComando < 0 ? rascunho : comandosRecentes[indiceComando];
+  } else if (e.key === 'Escape' && !modoTexto) {
+    cmdInputBox.classList.remove('visible');
+    cmdInput.blur();
+  }
+});
+
+// ============================================================
+// Ponte WebSocket com o backend Python (jarvis.py)
+// ============================================================
+let ws;
+const tokenSessao = new URLSearchParams(location.hash.slice(1)).get('token') || '';
+function enviarComando(valor, payload){
+  if (ws && ws.readyState === WebSocket.OPEN){
+    ws.send(JSON.stringify({ tipo:'comando', valor, payload, token:tokenSessao }));
+    return true;
+  }
+  return false;
+}
+function conectarBackend(){
+  try {
+    ws = new WebSocket('ws://localhost:8765');
+  } catch(e) {
+    setTimeout(conectarBackend, 2000);
+    return;
+  }
+  ws.onopen = ()=> {
+    document.getElementById('debugBox').textContent = '🟢 Conectado ao Jarvis';
+    enviarComando('obter_config');
+  };
+  ws.onmessage = (event)=>{
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; }
+    window.dispatchEvent(new CustomEvent('jarvis:mensagem', {detail:msg}));
+    if (msg.tipo === 'estado') {
+      window.setJarvisState(msg.valor);
+      if (modoTexto && msg.valor !== 'processando') document.getElementById('statusText').textContent = 'MODO TEXTO';
+    }
+    else if (msg.tipo === 'audio') window.setAudioLevel(msg.valor);
+    else if (msg.tipo === 'log') adicionarLog(msg.quem, msg.texto);
+    else if (msg.tipo === 'historico') {
+      logPanel.replaceChildren();
+      (msg.mensagens || []).forEach(m => adicionarLog(m.quem, m.texto));
+    }
+    else if (msg.tipo === 'atividade') {
+      ocupado = Boolean(msg.ocupado);
+      document.getElementById('btnEnviar').disabled = ocupado;
+      document.getElementById('atividadeTexto').textContent = ocupado ? 'Processando seu pedido…' : (msg.duracao ? `Concluído em ${msg.duracao}s` : 'Pronto para ajudar');
+    }
+    else if (msg.tipo === 'config') {
+      const mudou = modoTexto !== Boolean(msg.modo_texto);
+      modoTexto = Boolean(msg.modo_texto);
+      document.body.classList.toggle('modo-texto', modoTexto);
+      document.getElementById('btnTexto').textContent = modoTexto ? '🎙️ MUDAR PARA VOZ' : '⌨️ MODO TEXTO';
+      btnMic.classList.toggle('off', !msg.microfone);
+      btnMic.textContent = msg.microfone ? '🎙️ MIC: LIGADO' : '🎙️ MIC: DESLIGADO';
+      btnVoz.classList.toggle('off', !msg.voz);
+      btnVoz.textContent = msg.voz ? '🔊 VOZ: LIGADA' : '🔊 VOZ: DESLIGADA';
+      if (modoTexto) {
+        document.getElementById('statusText').textContent = 'MODO TEXTO';
+        cmdInputBox.classList.add('visible');
+        cmdInput.placeholder = 'Digite aqui. Enter envia. Confirmações: sim ou cancela.';
+        if (mudou && document.getElementById('centralOverlay').hidden) cmdInput.focus();
+      } else {
+        cmdInput.placeholder = 'Digite um comando e pressione Enter... (Esc fecha)';
+        cmdInputBox.classList.remove('visible');
+      }
+    }
+  };
+  ws.onclose = ()=>{
+    document.getElementById('debugBox').textContent = '🔴 Desconectado — tentando reconectar...';
+    setTimeout(conectarBackend, 2000);
+  };
+  ws.onerror = ()=> ws.close();
+}
+conectarBackend();
+
+// Botões do painel lateral -> comandos reais pro backend
+const btnMic = document.getElementById('btnMic');
+const btnVoz = document.getElementById('btnVoz');
+const btnApps = document.getElementById('btnApps');
+
+btnMic.addEventListener('click', function(){
+  enviarComando('toggle_mic');
+});
+btnVoz.addEventListener('click', function(){
+  enviarComando('toggle_voz');
+});
+document.getElementById('btnTexto').addEventListener('click', ()=> enviarComando('toggle_texto'));
+btnApps.addEventListener('click', function(){
+  adicionarLog('sistema', 'Atualizando lista de apps...');
+  enviarComando('atualizar_apps');
+});
+
+// ============================================================
+// Estado inicial. Simulação visual só quando a página recebe ?demo=1.
+// ============================================================
+window.setJarvisState('dormindo');
+let simAudio=false;
+document.addEventListener('keydown', e=>{
+  if (!new URLSearchParams(location.search).has('demo') || ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)) return;
+  if(e.key==='1') window.setJarvisState('ouvindo');
+  if(e.key==='2') window.setJarvisState('processando');
+  if(e.key==='3') window.setJarvisState('executando');
+  if(e.key==='4') window.setJarvisState('dormindo');
+  if(e.code==='Space') simAudio=true;
+});
+document.addEventListener('keyup', e=>{ if(e.code==='Space') simAudio=false; });
+if (new URLSearchParams(location.search).has('demo')) setInterval(()=>{ window.setAudioLevel(simAudio ? (0.4+Math.random()*0.6):0); }, 60);
+
+document.getElementById('debugBox').textContent = 'Conectando ao JARVIS…';
+window.jarvisUI = {enviarComando, adicionarLog, preencher: texto => { cmdInputBox.classList.add('visible'); cmdInput.value=texto; cmdInput.focus(); cmdInput.setSelectionRange(texto.length,texto.length); }};
+</script>
+<script src="hud_extras.js"></script>
+</body>
+</html>

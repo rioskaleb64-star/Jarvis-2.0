@@ -1,0 +1,326 @@
+[2026-09-25 17:31:42] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 17:31:43] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:31:43] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 17:31:43] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 17:31:43] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 17:31:45] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:31:49] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:31:57] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:08] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:20] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:32] Ouvido: Jarvis
+[2026-09-25 17:32:32] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:40] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:54] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:58] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 17:32:58] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:58] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 17:32:58] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 17:32:58] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 17:32:59] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:04] Ouvido: Jarvis acorda
+[2026-09-25 17:33:04] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:33:10] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:33:10] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:11] Ouvido: Jarvis acorda
+[2026-09-25 17:33:11] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:33:13] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:33:13] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:20] Ouvido: Jarvis acorda
+[2026-09-25 17:33:20] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:33:27] Ouvido: Jarvis acorda
+[2026-09-25 17:33:27] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:33:29] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:33:30] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:31] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:33:31] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:44] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:56] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:04] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:12] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:23] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:35] Ouvido: Jarvis sair
+[2026-09-25 17:34:35] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:46] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:59] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:10] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:16] Ouvido: Jarvis Bom dia
+[2026-09-25 17:35:16] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:35:22] Ouvido: Jarvis Bom dia
+[2026-09-25 17:35:22] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:35:22] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:35:22] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:28] Ouvido: Jarvis sair
+[2026-09-25 17:35:28] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:35:28] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:40] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:41] Ouvido: Jarvis sair
+[2026-09-25 17:35:47] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:59] Ouvido: Jarvis acorda
+[2026-09-25 17:35:59] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:36:03] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:36:03] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:15] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:28] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:34] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:46] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:58] Ouvido: ligou mas não apareceu nada e aí a bolinha azul de novo
+[2026-09-25 17:36:58] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:11] Ouvido: menos mais J ninguém ficou amarela na bolinha azul
+[2026-09-25 17:37:11] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:22] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:34] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:46] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:58] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:09] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:21] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:33] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:44] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:55] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:07] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:18] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:30] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:42] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:53] Ouvido: Jarvis acorda
+[2026-09-25 17:39:53] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:39:57] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:39:57] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:09] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:20] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:32] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:44] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:55] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:07] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:18] Ouvido: Jarvis acorda
+[2026-09-25 17:41:18] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:41:21] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:41:21] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:33] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:45] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:56] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:08] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:19] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:31] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:43] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:55] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:07] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:18] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:30] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:42] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:49] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 17:43:49] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:49] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 17:43:49] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 17:43:49] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 17:43:54] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:43:54] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:05] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:17] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:28] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:41] Ouvido: controlar o administrador
+[2026-09-25 17:44:41] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:53] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:45:05] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:45:16] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:45:30] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:45:45] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:02] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:15] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:27] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:39] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:51] Ouvido: Jarvis acorda
+[2026-09-25 17:46:51] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:46:55] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:46:55] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:07] Ouvido: sai desgraça
+[2026-09-25 17:47:08] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:19] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:31] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:44] Ouvido: and sky for and cromio gol
+[2026-09-25 17:47:44] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:56] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:08] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:19] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:24] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:36] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:48] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:59] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:49:12] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:49:24] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:50:58] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 17:50:58] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:50:58] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 17:50:59] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 17:50:59] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 17:51:10] Ouvido: Jarvis acorda
+[2026-09-25 17:51:10] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:52:26] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:52:26] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:52:33] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:52:33] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:52:49] Ouvido: Jarvis eu vou gozar
+[2026-09-25 17:53:02] Ouvido: jarras é brincadeira
+[2026-09-25 17:53:10] Ouvido: Jarvis sair
+[2026-09-25 17:53:21] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:53:21] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:53:25] Ouvido: Que beleza tudo pegando
+[2026-09-25 17:53:52] Ouvido: ele tem bloqueado ele tem pouca
+[2026-09-25 17:54:04] Ouvido: falta sei lá personalidade enfim 2
+[2026-09-25 17:54:16] Ouvido: para sempre formas chamar ele e sem formas de mandar
+[2026-09-25 17:56:09] Ouvido: quero assistir pornô
+[2026-09-25 17:56:19] Ouvido: ele acorde
+[2026-09-25 17:56:28] Ouvido: E aí Jarvis acorda
+[2026-09-25 17:56:28] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:57:00] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:57:00] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:57:06] Ouvido: coisas
+[2026-09-25 17:58:55] Ouvido: faça isso
+[2026-09-25 18:06:40] Ouvido: rack rack
+[2026-09-25 18:06:48] Ouvido: carai
+[2026-09-25 18:06:59] Ouvido: Chaves
+[2026-09-25 18:07:09] Ouvido: Vai se foder Vai Vai te tomar no cu
+[2026-09-25 18:07:53] Ouvido: desenho
+[2026-09-25 18:07:57] Ouvido: eu trabalho primeiro
+[2026-09-25 18:15:47] Ouvido: contestação
+[2026-09-25 18:18:06] Ouvido: mamãe vai te bater porque você tá usando essa barriga no chão
+[2026-09-25 18:18:51] Ouvido: já já
+[2026-09-25 20:19:11] Ouvido: escondendo
+[2026-09-25 20:20:59] Ouvido: queijo menos queijo bolo menos ó joga para cá
+[2026-09-25 20:21:05] Ouvido: com mais queijo tá aqui ó
+[2026-09-25 20:21:18] Ouvido: não tem para onde correr Essa é a única forma e se você discou
+[2026-09-25 20:21:30] Ouvido: eu tenho dó do Rafinha irmão Ah porque ele não joga na seleção que ele joga no Barcelona o cara sai do Barcelona com isso aqui Armando para ele isso
+[2026-09-25 20:21:43] Ouvido: criticar um atacante quando você não analisa o contexto vim aqui inclusive
+[2026-09-25 20:22:01] Ouvido: Cláudia acorda
+[2026-09-25 20:22:05] Ouvido: Jarvis acorda
+[2026-09-25 20:22:05] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 20:23:01] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 20:23:01] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 20:23:08] Ouvido: Oi amigo primeiro o que acontece
+[2026-09-25 20:23:23] Ouvido: Lembrando que para você que não sabe o nome da franquia não é Bunny Girl é horizontal Dolls not
+[2026-09-25 20:23:39] Ouvido: Você assiste
+[2026-09-25 20:23:47] Ouvido: assistir o Snapchat
+[2026-09-25 20:23:52] Ouvido: aí você vai assistir
+[2026-09-25 20:23:56] Ouvido: chamada de Santa Claus
+[2026-09-25 20:24:09] Ouvido: você não vai entender absolutamente nada vai ter pulado mais da metade da história então por isso
+[2026-09-25 20:25:49] Ouvido: você é um cara que se chama e eu sou o cara que assiste
+[2026-09-25 20:25:55] Ouvido: açaí para
+[2026-09-25 20:30:12] Ouvido: maiores escândalos da história do futebol Manchester City pode voltar à estaca zero
+[2026-09-25 20:30:51] Ouvido: lugar no futebol de todos os títulos do Manchester City
+[2026-09-25 20:31:46] Ouvido: realmente
+[2026-09-25 20:32:13] Ouvido: É de fato
+[2026-09-25 20:33:28] Ouvido: poderia
+[2026-09-25 20:33:35] Ouvido: eu poderia restaurar nossa
+[2026-09-25 20:33:40] Ouvido: você dorme e acorda com a barra cheia na vida real tem
+[2026-09-25 20:33:47] Ouvido: parecendo que foi atropelado por um caminhão
+[2026-09-25 20:35:12] Ouvido: deveria dar ponto de
+[2026-09-25 20:38:11] Ouvido: bora trampar Jarvis
+[2026-09-25 20:45:00] Ouvido: vai trabalhar
+[2026-09-25 20:45:07] Ouvido: Jarvis acorda
+[2026-09-25 20:45:07] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 20:45:39] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 20:45:39] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 21:55:54] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 21:55:54] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 21:55:54] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 21:55:55] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 21:55:55] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 21:55:59] Ouvido: Jarvis acorda
+[2026-09-25 21:55:59] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 22:14:35] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 22:14:35] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 22:14:35] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 22:14:35] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 22:14:35] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 22:14:47] Ouvido: Ei Jarvis Rei Jarvis seu babaca seu otário cara
+[2026-09-25 22:15:21] Ouvido: Você é otário Jar
+[2026-09-25 22:15:33] Ouvido: você é um otário
+[2026-09-25 22:16:09] Ouvido: Vai trabalhar rapaz
+[2026-09-25 22:16:21] Ouvido: pelo amor de Deus Jarvis Marco
+[2026-09-25 22:17:29] Ouvido: Ei Jarvis seu saco maldito
+[2026-09-25 22:19:14] Ouvido: Hey Charles
+[2026-09-25 22:20:11] Ouvido: Hey Jarvis Hey Jarvis
+[2026-09-25 22:20:23] Ouvido: pelo amor de Deus
+[2026-09-25 22:22:17] Ouvido: Chaves acorda
+[2026-09-25 22:22:28] Ouvido: ai que merda Jarvis acorda
+[2026-09-25 22:22:28] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 22:22:48] ⚠️ Ativação já em andamento, ignorando chamada duplicada.
+[2026-09-25 22:23:00] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 22:23:00] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 22:33:11] Ouvido: Jarvis acorda
+[2026-09-25 22:33:11] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 22:34:40] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 22:34:41] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 22:40:51] Ouvido: Jarvis acorda
+[2026-09-25 22:40:51] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 22:41:46] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 22:41:47] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 22:46:51] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 22:46:51] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 22:46:51] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 22:46:52] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 22:46:52] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 22:47:03] Ouvido: Jarvis acorda
+[2026-09-25 22:47:03] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 22:48:41] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 22:48:41] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-26 14:48:28] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-26 14:48:29] Microfone pronto; ruído base 163, limiar VAD 500.
+[2026-09-26 14:48:29] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-26 14:48:29] ⌨️ Hotkey Ctrl+Alt+J registrado.
+[2026-09-26 14:48:29] 👂 Listener iniciado. Diga 'Hey Jarvis' ou aperte Ctrl+Alt+J quando quiser.
+[2026-09-26 14:48:33] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-26 14:48:33] ✅ Wake word local ativa. Diga 'Hey Jarvis'.
+[2026-09-26 15:09:12] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-26 15:09:14] Microfone pronto; ruído base 127, limiar VAD 500.
+[2026-09-26 15:09:14] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-26 15:09:14] ⌨️ Hotkey Ctrl+Alt+J registrado.
+[2026-09-26 15:09:14] 👂 Listener iniciado. Diga 'Hey Jarvis' ou aperte Ctrl+Alt+J quando quiser.
+[2026-09-26 15:09:18] ✅ Wake word local ativa. Diga 'Hey Jarvis'.
+[2026-09-26 15:09:38] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-26 15:09:43] ⚠️ jarvis.py encerrou com código 1 — veja jarvis_crash.log para detalhes.
+[2026-09-26 15:09:43] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-26 15:09:44] Microfone pronto; ruído base 67, limiar VAD 500.
+[2026-09-26 15:09:52] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-26 15:09:55] ⚠️ jarvis.py encerrou com código 1 — veja jarvis_crash.log para detalhes.
+[2026-09-26 15:09:55] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-26 15:09:56] Microfone pronto; ruído base 67, limiar VAD 500.
+[2026-09-26 15:36:42] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-26 15:38:13] ⚠️ jarvis.py encerrou com código 3221226356 — veja jarvis_crash.log para detalhes.
+[2026-09-26 15:38:13] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-26 15:38:14] Microfone pronto; ruído base 116, limiar VAD 500.
+[2026-09-26 15:42:45] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-26 15:44:23] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-26 15:44:25] Microfone pronto; ruído base 94, limiar VAD 500.
+[2026-09-26 15:51:01] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-26 15:53:51] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-26 15:53:53] Microfone pronto; ruído base 146, limiar VAD 500.
+[2026-09-26 15:56:10] Falha na detecção local: 
+[2026-09-26 15:56:13] Microfone pronto; ruído base 83, limiar VAD 500.
+[2026-09-26 16:13:38] Falha na detecção local: 
+[2026-09-26 16:13:40] Microfone pronto; ruído base 73, limiar VAD 500.
+[2026-09-26 17:24:21] Falha na detecção local: 
+[2026-09-26 17:24:24] Microfone pronto; ruído base 394, limiar VAD 1182.
+[2026-09-26 17:24:26] Falha na detecção local: 
+[2026-09-26 17:24:27] Não consegui abrir o microfone (índice 1): [Errno -9999] Unanticipated host error
+[2026-09-26 17:24:29] Microfone pronto; ruído base 569, limiar VAD 1708.
+[2026-09-26 17:24:48] Falha na detecção local: 
+[2026-09-26 17:24:50] Microfone pronto; ruído base 202, limiar VAD 605.
+[2026-09-26 17:59:08] Falha na detecção local: 
+[2026-09-26 17:59:10] Microfone pronto; ruído base 1290, limiar VAD 3870.
+[2026-09-26 22:36:02] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-26 22:36:04] Microfone pronto; ruído base 132, limiar VAD 500.
+[2026-09-26 22:36:04] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-26 22:36:04] ⌨️ Hotkey Ctrl+Alt+J registrado.
+[2026-09-26 22:36:04] 👂 Listener iniciado. Diga 'Hey Jarvis' ou aperte Ctrl+Alt+J quando quiser.
+[2026-09-26 22:36:14] ✅ Wake word local ativa. Diga 'Hey Jarvis'.
+[2026-09-26 22:36:20] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-26 22:36:32] ⚠️ Ativação já em andamento, ignorando chamada duplicada.
+[2026-09-26 22:37:10] ⚠️ jarvis.py encerrou com código 3221226356 — veja jarvis_crash.log para detalhes.
+[2026-09-26 22:37:10] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-26 22:37:12] Microfone pronto; ruído base 123, limiar VAD 500.
+[2026-09-27 14:44:01] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-27 14:44:07] Microfone pronto; ruído base 99, limiar VAD 500.
+[2026-09-27 14:44:07] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-27 14:44:10] ⌨️ Hotkey Ctrl+Alt+J registrado.
+[2026-09-27 14:44:11] 👂 Listener iniciado. Diga 'Hey Jarvis' ou aperte Ctrl+Alt+J quando quiser.
+[2026-09-27 14:44:41] ✅ Wake word local ativa. Diga 'Hey Jarvis'.

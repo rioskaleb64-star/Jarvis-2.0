@@ -1,0 +1,4421 @@
+==================== ferramentas.py ==================== 
+"""Ferramentas do Jarvis — "as mãos": tudo que mexe no PC de verdade.
+
+Aqui moram: o registro de ferramentas (@ferramenta), os utilitários de
+janela/processo, o escaneamento de apps instalados, e todas as tools
+(apps, navegador, sistema, mídia, janela, rotinas).
+
+As constantes de config que são usadas SÓ por tools (caminhos dos
+navegadores, listas do modo foco, timeout de confirmação) moram aqui
+também, porque são configuração dessas tools — não do assistente.
+
+Feature nova = editar só este arquivo. O loop de voz não é tocado.
+"""
+import ctypes
+import difflib
+import json
+import os
+import subprocess
+import threading
+import time
+import webbrowser
+
+import psutil
+import pyautogui
+import win32api
+import win32con
+import win32gui
+import win32process
+from ctypes import POINTER, cast
+from comtypes import CLSCTX_ALL
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+from win32com.client import Dispatch
+
+from hud_util import emitir, logar_e_emitir
+
+# ============================================================
+# CONFIG DAS FERRAMENTAS
+# ============================================================
+CACHE_FILE = "apps_cache.json"
+
+NAVEGADORES = {
+    "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    "brave": os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+    "firefox": r"C:\Program Files\Mozilla Firefox\firefox.exe",
+    "edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+}
+
+# hwnds de janelas especiais que o Jarvis abriu e precisa rastrear
+JANELAS_RASTREADAS = {}
+
+# "Modo foco": ajuste essas listas com os nomes dos SEUS apps (os
+# mesmos nomes que você usaria com "abre X" / "fecha X").
+MODO_FOCO_FECHAR = ["discord", "spotify", "steam"]
+MODO_FOCO_ABRIR = ["visual studio code"]
+MODO_FOCO_VOLUME = 30
+
+# Confirmação por voz antes de desligar/reiniciar: só dizer "sim" (sem
+# precisar repetir "Jarvis") já basta, dentro dessa janela de tempo.
+CONFIRMACAO_TIMEOUT_SEGUNDOS = 12
+
+# Apelidos de processos reais para apps cujo executável do atalho
+# não corresponde ao nome do processo que realmente fica rodando
+# (comum em apps modernos/UWP, como a Calculadora do Windows 10/11)
+OVERRIDES_PROCESSO = {
+    "calculadora": ["calculatorapp.exe", "calculator.exe", "calc.exe"],
+}
+
+# nome do app -> caminho do executável
+APPS = {}
+
+_APPS_VIERAM_DO_CACHE = False
+
+
+# ============================================================
+# APPS INSTALADOS (scan + cache + matching)
+# ============================================================
+def escanear_apps():
+    emitir("status", texto="🔍 Escaneando programas...")
+    apps = {}
+    shell = Dispatch("WScript.Shell")
+    pastas = [
+        os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs"),
+        os.path.join(os.environ.get("PROGRAMDATA", ""), r"Microsoft\Windows\Start Menu\Programs"),
+    ]
+    for pasta in pastas:
+        if not os.path.exists(pasta):
+            continue
+        for root, dirs, files in os.walk(pasta):
+            for file in files:
+                if file.lower().endswith(".lnk"):
+                    caminho_atalho = os.path.join(root, file)
+                    nome = os.path.splitext(file)[0].lower().strip()
+                    try:
+                        atalho = shell.CreateShortCut(caminho_atalho)
+                        alvo = atalho.Targetpath
+                        if alvo and alvo.lower().endswith(".exe"):
+                            apps[nome] = alvo
+                    except Exception:
+                        pass
+
+    apps["bloco de notas"] = "notepad.exe"
+    apps["calculadora"] = "calc.exe"
+    apps["explorador"] = "explorer.exe"
+    apps["paint"] = "mspaint.exe"
+
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(apps, f, ensure_ascii=False, indent=2)
+    emitir("log", quem="sistema", texto=f"✅ {len(apps)} programas encontrados.")
+    return apps
+
+
+def carregar_apps_inicial():
+    """Carrega o cache instantaneamente se ele já existir. Se for a
+    primeira execução (sem cache), retorna vazio e o escaneamento real
+    roda em background (ver iniciar_interface no jarvis.py), pra não
+    travar o startup do HUD."""
+    global APPS, _APPS_VIERAM_DO_CACHE
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                APPS = json.load(f)
+            _APPS_VIERAM_DO_CACHE = True
+        except Exception:
+            APPS = {}
+    return APPS
+
+
+def atualizar_apps():
+    """Escaneia e atualiza o cache — usado em background e pelo botão
+    'atualizar' do HUD."""
+    global APPS
+    APPS = escanear_apps()
+
+
+def apps_prontos():
+    """True se o cache já existia (ou seja, abrir apps funciona já)."""
+    return _APPS_VIERAM_DO_CACHE
+
+
+def encontrar_app(nome):
+    nome = nome.lower().strip()
+    candidatos = [n for n in APPS if nome in n or n in nome]
+    if candidatos:
+        return min(candidatos, key=len)
+    parecidos = difflib.get_close_matches(nome, APPS.keys(), n=1, cutoff=0.5)
+    return parecidos[0] if parecidos else None
+
+
+# ============================================================
+# UTILITÁRIOS DE JANELA
+# ============================================================
+def obter_pids_processo(nome_exe):
+    pids = []
+    for proc in psutil.process_iter(['pid', 'name']):
+        if proc.info['name'] and proc.info['name'].lower() == nome_exe.lower():
+            pids.append(proc.info['pid'])
+    return pids
+
+
+def obter_janelas_visiveis(pids):
+    janelas = []
+    def callback(hwnd, _):
+        if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd):
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid in pids:
+                janelas.append(hwnd)
+        return True
+    win32gui.EnumWindows(callback, None)
+    return janelas
+
+
+# ============================================================
+# SISTEMA DE REGISTRO DE FERRAMENTAS (decorator)
+# Em vez de toda ferramenta nova exigir editar FUNCOES_DISPONIVEIS e
+# TOOLS manualmente em dois lugares (fácil esquecer um dos dois), o
+# decorator @ferramenta(...) registra os dois de uma vez só.
+# ============================================================
+FUNCOES_DISPONIVEIS = {}
+TOOLS = []
+
+
+def ferramenta(descricao, parametros=None):
+    def decorador(func):
+        nome = func.__name__
+        FUNCOES_DISPONIVEIS[nome] = func
+        TOOLS.append({
+            "type": "function",
+            "function": {
+                "name": nome,
+                "description": descricao,
+                "parameters": parametros or {"type": "object", "properties": {}},
+            },
+        })
+        return func
+    return decorador
+
+
+# ============================================================
+# CONFIRMAÇÃO POR VOZ (desligar / reiniciar)
+# A ferramenta NÃO executa a ação na hora — só marca que está esperando
+# confirmação e devolve a pergunta. O loop_voz() do jarvis.py checa
+# confirmacao_pendente() a cada frase e chama resolver_confirmacao().
+# ============================================================
+AGUARDANDO_CONFIRMACAO = {"ativo": False, "acao": None, "timer": None}
+
+
+def _cancelar_confirmacao_por_timeout():
+    if AGUARDANDO_CONFIRMACAO["ativo"]:
+        logar_e_emitir("⏱️ Tempo esgotado, ação cancelada.", quem="jarvis")
+        AGUARDANDO_CONFIRMACAO["ativo"] = False
+        AGUARDANDO_CONFIRMACAO["acao"] = None
+        AGUARDANDO_CONFIRMACAO["timer"] = None
+
+
+def _pedir_confirmacao(acao, mensagem):
+    timer_antigo = AGUARDANDO_CONFIRMACAO.get("timer")
+    if timer_antigo:
+        timer_antigo.cancel()
+    AGUARDANDO_CONFIRMACAO["ativo"] = True
+    AGUARDANDO_CONFIRMACAO["acao"] = acao
+    timer = threading.Timer(CONFIRMACAO_TIMEOUT_SEGUNDOS, _cancelar_confirmacao_por_timeout)
+    timer.daemon = True
+    AGUARDANDO_CONFIRMACAO["timer"] = timer
+    timer.start()
+    return mensagem
+
+
+def _executar_acao_confirmada(acao):
+    if acao == "desligar":
+        subprocess.run("shutdown /s /t 10", shell=True)
+        return "🔌 Desligando o PC em 10 segundos. Diga 'Jarvis cancelar ação' se mudar de ideia."
+    if acao == "reiniciar":
+        subprocess.run("shutdown /r /t 10", shell=True)
+        return "🔁 Reiniciando o PC em 10 segundos. Diga 'Jarvis cancelar ação' se mudar de ideia."
+    return "❌ Ação de confirmação desconhecida."
+
+
+def confirmacao_pendente():
+    """Tem uma confirmação de desligar/reiniciar esperando resposta?"""
+    return AGUARDANDO_CONFIRMACAO["ativo"]
+
+
+def resolver_confirmacao(texto):
+    """Interpreta a próxima frase falada.
+
+    Devolve a mensagem final se a frase resolveu a pendência (executou
+    ou cancelou), ou None se não tinha nada pendente / a frase não
+    serviu — nesse caso quem chama deve continuar como estava.
+    """
+    if not AGUARDANDO_CONFIRMACAO["ativo"]:
+        return None
+
+    texto_lower = texto.lower()
+    if any(p in texto_lower for p in ["sim", "confirma", "confirmo", "pode"]):
+        timer = AGUARDANDO_CONFIRMACAO.get("timer")
+        if timer:
+            timer.cancel()
+        acao = AGUARDANDO_CONFIRMACAO["acao"]
+        AGUARDANDO_CONFIRMACAO["ativo"] = False
+        AGUARDANDO_CONFIRMACAO["acao"] = None
+        return _executar_acao_confirmada(acao)
+    if any(p in texto_lower for p in ["não", "nao", "cancela"]):
+        timer = AGUARDANDO_CONFIRMACAO.get("timer")
+        if timer:
+            timer.cancel()
+        AGUARDANDO_CONFIRMACAO["ativo"] = False
+        AGUARDANDO_CONFIRMACAO["acao"] = None
+        return "✅ Ação cancelada."
+    return None
+
+
+# ============================================================
+# FERRAMENTAS — APPS E NAVEGADORES
+# ============================================================
+@ferramenta(
+    "Abre um programa instalado no computador pelo nome",
+    {"type": "object", "properties": {
+        "nome": {"type": "string"},
+        "argumentos": {"type": "string", "description": "opcional"},
+    }, "required": ["nome"]},
+)
+def abrir_app(nome, argumentos=""):
+    encontrado = encontrar_app(nome)
+    if not encontrado:
+        return f"❌ Não achei o app '{nome}' instalado."
+    caminho = APPS[encontrado]
+    try:
+        if argumentos:
+            subprocess.Popen(f'"{caminho}" {argumentos}')
+        else:
+            subprocess.Popen(caminho)
+        return f"✅ Abrindo {encontrado} {argumentos}".strip()
+    except Exception as e:
+        return f"❌ Erro ao abrir {encontrado}: {e}"
+
+
+@ferramenta(
+    "Fecha TODAS as janelas de um programa aberto, pelo nome",
+    {"type": "object", "properties": {
+        "nome": {"type": "string"},
+    }, "required": ["nome"]},
+)
+def fechar_app(nome):
+    encontrado = encontrar_app(nome)
+    if not encontrado:
+        return f"❌ Não achei o app '{nome}'."
+
+    exe_name = os.path.basename(APPS[encontrado]).lower()
+    candidatos = set(OVERRIDES_PROCESSO.get(encontrado, []))
+    candidatos.add(exe_name)
+
+    # PIDs dos processos "de lógica" do app
+    pids_alvo = [
+        proc.info['pid'] for proc in psutil.process_iter(['pid', 'name'])
+        if (proc.info['name'] or "").lower() in candidatos
+    ]
+
+    # Apps UWP (Calculadora, Configurações, Alarmes, etc.) costumam ter a
+    # JANELA hospedada pelo ApplicationFrameHost.exe, mesmo com a lógica
+    # rodando em outro processo (ex: CalculatorApp.exe)
+    pids_host = obter_pids_processo("ApplicationFrameHost.exe")
+
+    palavra_chave = encontrado.split()[0]
+    janelas_fechadas = 0
+
+    if pids_alvo or pids_host:
+        for hwnd in obter_janelas_visiveis(pids_alvo + pids_host):
+            titulo = win32gui.GetWindowText(hwnd).lower()
+            if palavra_chave in titulo or any(c.replace(".exe", "") in titulo for c in candidatos):
+                win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+                janelas_fechadas += 1
+
+    if janelas_fechadas:
+        time.sleep(0.6)  # dá tempo do app processar o WM_CLOSE
+
+    # Fallback: mata o processo de lógica diretamente, se ainda existir
+    fechados = []
+    erros = []
+    for pid in pids_alvo:
+        try:
+            p = psutil.Process(pid)
+            if p.is_running():
+                p.terminate()
+                fechados.append(p.name())
+        except psutil.NoSuchProcess:
+            pass  # já tinha fechado pelo WM_CLOSE, ótimo
+        except Exception as e:
+            erros.append(str(e))
+
+    if janelas_fechadas or fechados:
+        return f"✅ Fechando {encontrado}"
+
+    if erros:
+        emitir("log", quem="sistema", texto=f"⚠️ Erros ao fechar {encontrado}: {'; '.join(erros)}")
+
+    # Fallback antigo: qualquer processo cujo nome contenha a palavra-chave
+    if len(palavra_chave) >= 3:
+        for proc in psutil.process_iter(['pid', 'name']):
+            nome_proc = (proc.info['name'] or "").lower()
+            if palavra_chave in nome_proc:
+                try:
+                    psutil.Process(proc.info['pid']).terminate()
+                    fechados.append(nome_proc)
+                except Exception as e:
+                    erros.append(str(e))
+
+    if fechados:
+        return f"✅ Fechando {encontrado}"
+
+    return f"❌ {encontrado} não parece estar aberto no momento."
+
+
+@ferramenta(
+    "Abre um navegador (chrome, brave, firefox, edge) em modo normal, privado ou tor (tor só no brave)",
+    {"type": "object", "properties": {
+        "navegador": {"type": "string", "enum": ["chrome", "brave", "firefox", "edge"]},
+        "modo": {"type": "string", "enum": ["normal", "privado", "tor"]},
+        "url": {"type": "string"},
+        "pesquisa": {"type": "string"},
+    }, "required": ["navegador"]},
+)
+def abrir_navegador(navegador="chrome", modo="normal", url="", pesquisa=""):
+    navegador = navegador.lower()
+    caminho = NAVEGADORES.get(navegador)
+    if not caminho or not os.path.exists(caminho):
+        return f"❌ Não achei o navegador '{navegador}' instalado no caminho esperado."
+
+    if modo == "tor":
+        if navegador != "brave":
+            return "❌ Modo Tor só está disponível pro Brave."
+        try:
+            pids_brave = obter_pids_processo("brave.exe")
+            janelas_antes = set(obter_janelas_visiveis(pids_brave))
+
+            subprocess.Popen(caminho)
+            time.sleep(2.5)
+            pyautogui.hotkey('shift', 'alt', 'n')
+            time.sleep(6)
+
+            pids_brave = obter_pids_processo("brave.exe")
+            janelas_depois = set(obter_janelas_visiveis(pids_brave))
+            novas = janelas_depois - janelas_antes
+            if novas:
+                JANELAS_RASTREADAS["brave_tor"] = list(novas)[0]
+
+            if pesquisa:
+                url = f"https://duckduckgo.com/?q={pesquisa.replace(' ', '+')}"
+            if url:
+                pyautogui.hotkey('ctrl', 'l')
+                time.sleep(0.5)
+                pyautogui.typewrite(url, interval=0.02)
+                pyautogui.press('enter')
+
+            return f"✅ Abrindo Brave em janela Tor{(' pesquisando: ' + pesquisa) if pesquisa else ''}"
+        except Exception as e:
+            return f"❌ Erro ao abrir Brave em modo Tor: {e}"
+
+    args = []
+    if modo == "privado":
+        flags = {
+            "chrome": "--incognito", "brave": "--incognito",
+            "edge": "--inprivate", "firefox": "-private-window",
+        }
+        args.append(flags.get(navegador, ""))
+
+    if pesquisa:
+        url = f"https://www.google.com/search?q={pesquisa.replace(' ', '+')}"
+    if url:
+        args.append(f'"{url}"')
+
+    try:
+        comando = f'"{caminho}" ' + " ".join(a for a in args if a)
+        subprocess.Popen(comando)
+        return f"✅ Abrindo {navegador} ({modo}){(' pesquisando: ' + pesquisa) if pesquisa else ''}"
+    except Exception as e:
+        return f"❌ Erro ao abrir {navegador}: {e}"
+
+
+@ferramenta("Fecha especificamente a janela Tor do Brave, sem fechar outras janelas do Brave")
+def fechar_janela_tor():
+    hwnd = JANELAS_RASTREADAS.get("brave_tor")
+    if not hwnd or not win32gui.IsWindow(hwnd):
+        return "❌ Não tem nenhuma janela Tor rastreada aberta no momento."
+    win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+    del JANELAS_RASTREADAS["brave_tor"]
+    return "✅ Fechando apenas a janela Tor do Brave."
+
+
+@ferramenta(
+    "Pesquisa um termo no Google no navegador padrão",
+    {"type": "object", "properties": {"termo": {"type": "string"}}, "required": ["termo"]},
+)
+def pesquisar_google(termo):
+    url = f"https://www.google.com/search?q={termo.replace(' ', '+')}"
+    webbrowser.open(url)
+    return f"🔎 Pesquisando no Google: {termo}"
+
+
+@ferramenta(
+    "Abre uma URL específica no navegador padrão",
+    {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
+)
+def abrir_url(url):
+    webbrowser.open(url)
+    return f"✅ Abrindo {url}"
+
+
+# ============================================================
+# FERRAMENTAS — SISTEMA
+# ============================================================
+@ferramenta("Tira um print/screenshot da tela e salva")
+def tirar_print():
+    pasta = os.path.join(os.path.expanduser("~"), "Pictures", "Jarvis_Prints")
+    os.makedirs(pasta, exist_ok=True)
+    nome_arquivo = f"print_{time.strftime('%Y%m%d_%H%M%S')}.png"
+    caminho = os.path.join(pasta, nome_arquivo)
+    pyautogui.screenshot(caminho)
+    return f"📸 Print salvo em: {caminho}"
+
+
+@ferramenta(
+    "Ajusta o volume do sistema, de 0 a 100",
+    {"type": "object", "properties": {
+        "nivel": {"type": "integer"},
+    }, "required": ["nivel"]},
+)
+def ajustar_volume(nivel):
+    try:
+        nivel = max(0, min(100, int(nivel)))
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        volume = cast(interface, POINTER(IAudioEndpointVolume))
+        volume.SetMasterVolumeLevelScalar(nivel / 100, None)
+        return f"🔊 Volume ajustado para {nivel}%"
+    except Exception as e:
+        return f"❌ Erro ao ajustar volume: {e}"
+
+
+@ferramenta("Bloqueia a tela do computador imediatamente")
+def bloquear_pc():
+    ctypes.windll.user32.LockWorkStation()
+    return "🔒 PC bloqueado."
+
+
+@ferramenta(
+    "Pede pra desligar o computador. NÃO desliga na hora — o sistema já pede "
+    "confirmação por voz sozinho (o usuário só precisa dizer 'sim' depois)."
+)
+def desligar_pc():
+    return _pedir_confirmacao(
+        "desligar",
+        "⚠️ Quer mesmo desligar o PC? Diga 'sim' nos próximos segundos pra confirmar."
+    )
+
+
+@ferramenta(
+    "Pede pra reiniciar o computador. NÃO reinicia na hora — o sistema já pede "
+    "confirmação por voz sozinho (o usuário só precisa dizer 'sim' depois)."
+)
+def reiniciar_pc():
+    return _pedir_confirmacao(
+        "reiniciar",
+        "⚠️ Quer mesmo reiniciar o PC? Diga 'sim' nos próximos segundos pra confirmar."
+    )
+
+
+@ferramenta("Cancela um desligamento ou reinício agendado")
+def cancelar_acao():
+    subprocess.run("shutdown /a", shell=True)
+    return "✅ Ação de desligar/reiniciar cancelada."
+
+
+# ============================================================
+# FERRAMENTAS — MÍDIA
+# ============================================================
+def _tecla_midia(vk_code):
+    win32api.keybd_event(vk_code, 0, 0, 0)
+    win32api.keybd_event(vk_code, 0, win32con.KEYEVENTF_KEYUP, 0)
+
+
+@ferramenta("Toca ou pausa a música/mídia em reprodução (tecla de mídia play/pause)")
+def media_play_pause():
+    _tecla_midia(0xB3)
+    return "⏯️ Play/pause."
+
+
+@ferramenta("Pula pra próxima faixa de música/mídia")
+def media_proxima():
+    _tecla_midia(0xB0)
+    return "⏭️ Próxima faixa."
+
+
+@ferramenta("Volta pra faixa anterior de música/mídia")
+def media_anterior():
+    _tecla_midia(0xB1)
+    return "⏮️ Faixa anterior."
+
+
+# ============================================================
+# FERRAMENTAS — JANELA EM FOCO
+# ============================================================
+@ferramenta("Fecha a janela que está em foco/ativa no momento (ex: 'fecha essa janela', 'fecha isso')")
+def fechar_janela_atual():
+    hwnd = win32gui.GetForegroundWindow()
+    if not hwnd:
+        return "❌ Não consegui identificar a janela em foco."
+    titulo = win32gui.GetWindowText(hwnd) or "(sem título)"
+    win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+    return f"✅ Fechando janela em foco: {titulo}"
+
+
+@ferramenta("Minimiza a janela que está em foco/ativa no momento (ex: 'minimiza isso')")
+def minimizar_janela_atual():
+    hwnd = win32gui.GetForegroundWindow()
+    if not hwnd:
+        return "❌ Não consegui identificar a janela em foco."
+    win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+    return "✅ Janela minimizada."
+
+
+# ============================================================
+# FERRAMENTAS — ROTINAS
+# ============================================================
+@ferramenta(
+    "Ativa o 'modo foco': fecha apps de distração, abre apps de trabalho e "
+    "baixa o volume (listas configuráveis no topo deste arquivo)"
+)
+def ativar_modo_foco():
+    resultados = []
+    for nome in MODO_FOCO_FECHAR:
+        resultados.append(fechar_app(nome))
+    for nome in MODO_FOCO_ABRIR:
+        resultados.append(abrir_app(nome))
+    resultados.append(ajustar_volume(MODO_FOCO_VOLUME))
+    return "🎯 Modo foco ativado.\n" + "\n".join(resultados)
+
+
+# o que o jarvis.py importa com "from ferramentas import *"
+__all__ = [
+    # registro
+    "FUNCOES_DISPONIVEIS", "TOOLS", "ferramenta",
+    # apps
+    "APPS", "apps_prontos", "atualizar_apps", "carregar_apps_inicial",
+    "encontrar_app", "escanear_apps",
+    # confirmação
+    "confirmacao_pendente", "resolver_confirmacao",
+    # ferramentas
+    "abrir_app", "fechar_app", "abrir_navegador", "fechar_janela_tor",
+    "pesquisar_google", "abrir_url", "tirar_print", "ajustar_volume",
+    "bloquear_pc", "desligar_pc", "reiniciar_pc", "cancelar_acao",
+    "media_play_pause", "media_proxima", "media_anterior",
+    "fechar_janela_atual", "minimizar_janela_atual", "ativar_modo_foco",
+]
+
+==================== hud_bridge.py ==================== 
+import asyncio
+import json
+import threading
+import websockets
+
+_loop = None
+_clientes = set()
+_lock = threading.Lock()
+_callback_comando = None
+
+
+def registrar_callback_comando(func):
+    """jarvis.py chama isso pra receber comandos vindos do HUD (botões, texto, etc)."""
+    global _callback_comando
+    _callback_comando = func
+
+
+async def _handler(websocket):
+    with _lock:
+        _clientes.add(websocket)
+    try:
+        async for mensagem in websocket:
+            try:
+                dados = json.loads(mensagem)
+            except json.JSONDecodeError:
+                continue
+            if dados.get("tipo") == "comando" and _callback_comando:
+                _callback_comando(dados.get("valor"), dados.get("payload"))
+    finally:
+        with _lock:
+            _clientes.discard(websocket)
+
+
+async def _broadcast_async(mensagem: dict):
+    if not _clientes:
+        return
+    texto = json.dumps(mensagem, ensure_ascii=False)
+    mortos = []
+    for cliente in list(_clientes):
+        try:
+            await cliente.send(texto)
+        except Exception:
+            mortos.append(cliente)
+    for m in mortos:
+        _clientes.discard(m)
+
+
+def enviar(mensagem: dict):
+    """Thread-safe. Pode ser chamado de qualquer thread (voz, IA, etc)."""
+    if _loop is None:
+        return
+    asyncio.run_coroutine_threadsafe(_broadcast_async(mensagem), _loop)
+
+
+async def _main(host, port):
+    global _loop
+    _loop = asyncio.get_running_loop()
+    async with websockets.serve(_handler, host, port):
+        await asyncio.Future()
+
+
+def iniciar_servidor(host="localhost", port=8765):
+    def _run():
+        asyncio.run(_main(host, port))
+    threading.Thread(target=_run, daemon=True).start()
+==================== hud_util.py ==================== 
+"""Saída do Jarvis: log em arquivo + eventos pro HUD.
+
+Este arquivo existe porque é o ÚNICO pedaço compartilhado entre o
+``jarvis.py`` (loop de voz, interface) e o ``ferramentas.py`` (avisar
+erros, progresso do escaneamento de apps). Os dois precisam das mesmas
+funções, então elas moram num lugar só em vez de duplicadas.
+"""
+import os
+import queue
+import time
+
+import hud_bridge
+from log_util import criar_logger
+
+PASTA_JARVIS = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(PASTA_JARVIS, "jarvis_log.txt")
+
+log = criar_logger(LOG_FILE)
+
+# Fila interna de eventos (mantida por compatibilidade)
+EVENTOS = queue.Queue()
+
+
+def texto_status_para_estado_hud(texto_status):
+    if "Ouvindo" in texto_status:
+        return "ouvindo"
+    if "Processando" in texto_status:
+        return "processando"
+    if "Pausado" in texto_status:
+        return "dormindo"
+    return "dormindo"
+
+
+def emitir(tipo, **kwargs):
+    EVENTOS.put((tipo, kwargs))
+
+    if tipo == "status":
+        estado = texto_status_para_estado_hud(kwargs.get("texto", ""))
+        hud_bridge.enviar({"tipo": "estado", "valor": estado})
+    elif tipo == "log":
+        hud_bridge.enviar({
+            "tipo": "log",
+            "quem": kwargs.get("quem", "sistema"),
+            "texto": kwargs.get("texto", "")
+        })
+
+
+def emitir_audio(nivel):
+    """Nível do microfone em tempo real (pulso visual do HUD)."""
+    hud_bridge.enviar({"tipo": "audio", "valor": nivel})
+
+
+def logar_e_emitir(texto, quem="sistema"):
+    """Grava no jarvis_log.txt E mostra no HUD — usado pra eventos que
+    valem a pena persistir em disco (erros, avisos, eventos de sistema)."""
+    log(texto)
+    emitir("log", quem=quem, texto=texto)
+
+
+def iniciar_hud():
+    hud_bridge.iniciar_servidor()
+
+
+def registrar_comandos(callback):
+    hud_bridge.registrar_callback_comando(callback)
+
+==================== jarvis.py ==================== 
+"""
+JARVIS — assistente de computador por voz (Windows).
+
+Este arquivo é o "cérebro": configuração, microfone, reconhecimento de
+fala, IA, comandos diretos, loop de escuta e interface (HUD).
+
+As ferramentas que agem no PC (abrir/fechar apps, navegador, volume,
+mídia, print, desligar...) estão em ferramentas.py.
+A saída de log/HUD está em hud_util.py.
+"""
+import os
+import re
+import json
+import time
+import difflib
+import threading
+import winsound
+import numpy as np
+import pyaudiowpatch as pyaudio
+import speech_recognition as sr
+import webview
+from openai import OpenAI
+
+from hud_util import (
+    PASTA_JARVIS,
+    emitir,
+    emitir_audio,
+    iniciar_hud,
+    log,
+    logar_e_emitir,
+    registrar_comandos,
+)
+from ferramentas import *  # noqa: F401,F403  (traz as tools e o registro)
+
+# Necessário para o SpeechRecognition conseguir usar o PyAudioWPatch
+# em vez do PyAudio tradicional (que não compila em Python 3.14 sem
+# o Visual C++ Build Tools instalado)
+sr.Microphone.get_pyaudio = lambda self: pyaudio
+
+# ============================================================
+# DEPENDÊNCIAS OPCIONAIS
+# Cada uma destas é usada por uma funcionalidade nova, mas nenhuma
+# derruba o programa se não estiver instalada ainda — só desativa
+# aquela funcionalidade específica e avisa no log.
+# ============================================================
+try:
+    import keyboard  # hotkey global Win+J
+    _KEYBOARD_DISPONIVEL = True
+except ImportError:
+    _KEYBOARD_DISPONIVEL = False
+
+try:
+    import pyperclip  # leitura da área de transferência (resumir_clipboard)
+    _PYPERCLIP_DISPONIVEL = True
+except ImportError:
+    _PYPERCLIP_DISPONIVEL = False
+
+try:
+    from faster_whisper import WhisperModel  # STT local (fallback offline)
+    _FASTER_WHISPER_DISPONIVEL = True
+except ImportError:
+    _FASTER_WHISPER_DISPONIVEL = False
+
+# ================================
+# CONFIGURAÇÃO DE MÚLTIPLAS IAs
+# ================================
+# A ordem importa: o primeiro da lista com api_key configurada é
+# tentado primeiro. Groq (LPU dedicada) é MUITO mais rápido que o
+# Nemotron 550B gratuito da OpenRouter, então ele deve ficar sempre em
+# primeiro — a OpenRouter aqui é só rede de segurança se o Groq cair.
+PROVEDORES = [
+    {
+        "nome": "Groq",
+        "api_key": os.getenv("GROQ_API_KEY"),
+        "base_url": "https://api.groq.com/openai/v1",
+        "modelo": "qwen/qwen3.8-27b",
+        "max_tokens": 400,
+        "timeout": 10.0,
+    },
+    {
+        "nome": "OpenRouter",
+        "api_key": os.getenv("OPENROUTER_API_KEY"),
+        "base_url": "https://openrouter.ai/api/v1",
+        "modelo": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "max_tokens": 600,
+        "timeout": 20.0,
+    },
+]
+
+# Configuração de microfone TESTADA E COMPROVADA nesta máquina via
+# PyAudioWPatch. NÃO usar índices do sounddevice — a numeração é
+# diferente entre bibliotecas. NÃO tentar redescobrir automaticamente:
+# WDM-KS (que aparecia como "melhor" candidato em buscas automáticas)
+# não suporta streaming em modo blocking nesta máquina
+# (erro PaErrorCode -9999/-9996).
+MIC_DEVICE_INDEX = 1
+MIC_SAMPLE_RATE = 44100
+MIC_CHUNK_SIZE = 1024
+VAD_SILENCIO_LIMIAR = 500
+VAD_SILENCIO_MAXIMO = 0.7
+VAD_DURACAO_MAXIMA = 15
+
+WAKE_WORD = "jarvis"
+
+# STT local (faster-whisper) usado só quando o Google falha por causa
+# de rede/indisponibilidade. Modelo "small" é o equilíbrio pedido entre
+# leveza e precisão; ajuste aqui se quiser trocar por "base" ou "medium".
+WHISPER_MODELO = "small"
+WHISPER_IDIOMA = "pt"
+
+# Rate limit simples pra não estourar a cota da API em caso de ruído
+# sendo interpretado repetidamente como comando.
+RATE_LIMIT_MAX_CHAMADAS = 15
+RATE_LIMIT_JANELA_SEGUNDOS = 60
+
+# ------------------------------------------------------------
+# ENCERRAR A SESSÃO DO JARVIS ("sair", "desliga aí", "fica offline"...)
+# ------------------------------------------------------------
+# Frases curtas exigem match EXATO do comando inteiro (evita fechar o
+# Jarvis sem querer se você disser algo tipo "será que dá pra sair
+# mais cedo hoje"). Frases longas/específicas podem ser checadas por
+# conterem, já que são raras de aparecer sem intenção.
+FRASES_ENCERRAR_EXATAS = {"sair", "exit", "tchau"}
+FRASES_ENCERRAR_CONTIDAS = [
+    "desliga aí", "desliga essa porra", "desliga logo",
+    "fica offline", "vai offline", "cai fora", "some daqui",
+    "vai dormir", "desativa aí", "encerra sessão", "encerra aí",
+    "finaliza aí", "para de ouvir", "pode ir", "fecha tudo",
+]
+
+
+def deve_encerrar_sessao(texto):
+    texto_norm = texto.lower().strip()
+
+    if texto_norm in FRASES_ENCERRAR_EXATAS:
+        return True
+
+    # Não confundir com os comandos REAIS de desligar/reiniciar o PC
+    # (esses continuam passando pela confirmação de segurança normal)
+    if re.match(r'^desliga(r)?(\s+o\s+(computador|pc))?$', texto_norm):
+        return False
+    if re.match(r'^reinicia(r)?(\s+o\s+(computador|pc))?$', texto_norm):
+        return False
+
+    return any(frase in texto_norm for frase in FRASES_ENCERRAR_CONTIDAS)
+
+
+OUVIR_LIGADO = threading.Event()
+OUVIR_LIGADO.set()
+
+# Setado pelo hotkey Win+J: faz a próxima frase captada ser tratada
+# como comando direto, sem precisar dizer "Jarvis" antes (push-to-talk).
+PROXIMA_SEM_WAKE_WORD = threading.Event()
+
+JANELA_HUD = None
+
+LIMIAR_VAD_ATUAL = VAD_SILENCIO_LIMIAR
+
+APPS = carregar_apps_inicial()
+_APPS_VIERAM_DO_CACHE = apps_prontos()
+
+
+def _beep(freq, duracao_ms):
+    try:
+        winsound.Beep(freq, duracao_ms)
+    except Exception:
+        pass
+
+
+def _beep_ouvindo():
+    _beep(700, 120)
+
+
+def _beep_entendido():
+    _beep(1200, 80)
+
+
+# ============================================================
+# MICROFONE — PyAudioWPatch, dispositivo fixo e testado (índice 1)
+# STREAM PERSISTENTE: aberto uma única vez e reaproveitado em todas as
+# capturas, em vez de recriar o PyAudio a cada frase.
+# ============================================================
+_pa_instance = None
+_pa_stream = None
+
+
+def _abrir_stream_persistente():
+    global _pa_instance, _pa_stream
+    try:
+        _pa_instance = pyaudio.PyAudio()
+        _pa_stream = _pa_instance.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=MIC_SAMPLE_RATE,
+            input=True,
+            input_device_index=MIC_DEVICE_INDEX,
+            frames_per_buffer=MIC_CHUNK_SIZE,
+        )
+        return True
+    except Exception as e:
+        logar_e_emitir(f"❌ Não consegui abrir o microfone (índice {MIC_DEVICE_INDEX}): {e}")
+        _pa_instance = None
+        _pa_stream = None
+        return False
+
+
+def _garantir_stream():
+    if _pa_stream is None:
+        return _abrir_stream_persistente()
+    return True
+
+
+def fechar_stream_microfone():
+    global _pa_instance, _pa_stream
+    try:
+        if _pa_stream:
+            _pa_stream.stop_stream()
+            _pa_stream.close()
+    except Exception:
+        pass
+    try:
+        if _pa_instance:
+            _pa_instance.terminate()
+    except Exception:
+        pass
+    _pa_stream = None
+    _pa_instance = None
+
+
+# ============================================================
+# STT LOCAL (faster-whisper) — fallback offline quando o Google falha
+# ============================================================
+_whisper_model = None
+
+
+def _carregar_whisper_em_background():
+    global _whisper_model
+    if not _FASTER_WHISPER_DISPONIVEL:
+        logar_e_emitir("ℹ️ faster-whisper não instalado — fallback offline de voz desativado.")
+        return
+    try:
+        logar_e_emitir("🧠 Carregando modelo Whisper local em segundo plano...")
+        _whisper_model = WhisperModel(WHISPER_MODELO, device="cpu", compute_type="int8")
+        logar_e_emitir("✅ Whisper local pronto (fallback offline ativo).")
+    except Exception as e:
+        logar_e_emitir(f"⚠️ Não consegui carregar o Whisper local: {e}")
+
+
+def _resample_para_16k(audio_np, taxa_original):
+    if taxa_original == 16000:
+        return audio_np
+    duracao = len(audio_np) / taxa_original
+    n_amostras_novas = max(1, int(duracao * 16000))
+    indices_originais = np.linspace(0, len(audio_np) - 1, num=len(audio_np))
+    indices_novos = np.linspace(0, len(audio_np) - 1, num=n_amostras_novas)
+    return np.interp(indices_novos, indices_originais, audio_np).astype(np.float32)
+
+
+def transcrever_offline(audio_bytes, sample_rate):
+    if _whisper_model is None:
+        return None
+    try:
+        audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        audio_16k = _resample_para_16k(audio_np, sample_rate)
+        segmentos, _info = _whisper_model.transcribe(
+            audio_16k, language=WHISPER_IDIOMA, beam_size=1
+        )
+        texto = " ".join(s.text.strip() for s in segmentos).strip()
+        return texto or None
+    except Exception as e:
+        logar_e_emitir(f"⚠️ Erro no reconhecimento offline (Whisper): {e}")
+        return None
+
+
+# ============================================================
+# VOZ — ENTRADA COM VAD (PyAudioWPatch, stream persistente)
+# ============================================================
+def escutar_comando():
+    if not _garantir_stream():
+        time.sleep(1.0)
+        return None
+
+    recognizer = sr.Recognizer()
+    block_duration = MIC_CHUNK_SIZE / MIC_SAMPLE_RATE
+
+    frames_gravados = []
+    silencio_acumulado = 0.0
+    tempo_total = 0.0
+    comecou_a_falar = False
+
+    while True:
+        try:
+            dados = _pa_stream.read(MIC_CHUNK_SIZE, exception_on_overflow=False)
+        except Exception as e:
+            logar_e_emitir(f"❌ Erro no microfone, reabrindo: {e}")
+            fechar_stream_microfone()
+            emitir_audio(0.0)
+            return None
+
+        bloco = np.frombuffer(dados, dtype=np.int16)
+        rms = float(np.sqrt(np.mean(bloco.astype(np.float32) ** 2)))
+        tempo_total += block_duration
+
+        # Envia o nível de áudio em tempo real pro HUD (pulso visual)
+        nivel_normalizado = min(1.0, rms / 4000.0)
+        emitir_audio(nivel_normalizado)
+
+        if rms > LIMIAR_VAD_ATUAL:
+            comecou_a_falar = True
+            silencio_acumulado = 0.0
+            frames_gravados.append(dados)
+        else:
+            silencio_acumulado += block_duration
+            if comecou_a_falar:
+                frames_gravados.append(dados)
+            if silencio_acumulado >= VAD_SILENCIO_MAXIMO:
+                break
+
+        if tempo_total >= VAD_DURACAO_MAXIMA:
+            break
+
+    emitir_audio(0.0)
+
+    if not frames_gravados:
+        return None
+
+    audio_bytes = b"".join(frames_gravados)
+
+    try:
+        audio = sr.AudioData(audio_bytes, MIC_SAMPLE_RATE, 2)
+        return recognizer.recognize_google(audio, language="pt-BR")
+    except sr.UnknownValueError:
+        return None
+    except sr.RequestError as e:
+        logar_e_emitir(f"⚠️ Google indisponível ({e}), tentando reconhecimento local...")
+        texto_offline = transcrever_offline(audio_bytes, MIC_SAMPLE_RATE)
+        if texto_offline:
+            emitir("log", quem="sistema", texto=f'🗣️ (offline) "{texto_offline}"')
+        return texto_offline
+
+
+def detectar_wake_word(texto):
+    if not texto:
+        return None
+    palavras = texto.strip().split()
+    if not palavras:
+        return None
+    primeira_palavra = palavras[0].lower().strip(",.!?;:")
+    parecido = difflib.get_close_matches(primeira_palavra, [WAKE_WORD], n=1, cutoff=0.6)
+    if parecido:
+        return " ".join(palavras[1:]).strip()
+    return None
+
+
+# ============================================================
+# RATE LIMIT DAS CHAMADAS DE IA
+# ============================================================
+_chamadas_ia_timestamps = []
+
+
+def _limite_de_chamadas_excedido():
+    agora = time.time()
+    _chamadas_ia_timestamps[:] = [t for t in _chamadas_ia_timestamps if agora - t < RATE_LIMIT_JANELA_SEGUNDOS]
+    if len(_chamadas_ia_timestamps) >= RATE_LIMIT_MAX_CHAMADAS:
+        return True
+    _chamadas_ia_timestamps.append(agora)
+    return False
+
+
+# ============================================================
+# COMANDOS DIRETOS (regex/palavra-chave) — bypassa a IA inteira pra
+# comandos comuns, zerando a latência pra eles. Também serve de
+# fallback quando os dois provedores de IA estão fora do ar, desde que
+# a frase bata com um padrão conhecido.
+# Padrões mais específicos vêm primeiro; "abre X"/"fecha X" genéricos
+# ficam por último, como catch-all.
+# ============================================================
+PADROES_DIRETOS = []
+
+
+def _registrar_padrao(regex, handler):
+    PADROES_DIRETOS.append((re.compile(regex, re.IGNORECASE), handler))
+
+
+_registrar_padrao(r'^fecha (?:essa|esta|a) janela$', lambda m: fechar_janela_atual())
+_registrar_padrao(r'^fecha isso$', lambda m: fechar_janela_atual())
+_registrar_padrao(r'^minimiza(?: essa| esta)?(?: janela)?$', lambda m: minimizar_janela_atual())
+_registrar_padrao(r'^minimiza isso$', lambda m: minimizar_janela_atual())
+_registrar_padrao(r'^(?:tira|bate) (?:um )?print(?:e)?$', lambda m: tirar_print())
+_registrar_padrao(r'^(?:ajusta|coloca|bota) o volume (?:pra|para|em) (\d+)%?$', lambda m: ajustar_volume(int(m.group(1))))
+_registrar_padrao(r'^volume (?:pra |para |em )?(\d+)%?$', lambda m: ajustar_volume(int(m.group(1))))
+_registrar_padrao(r'^bloqueia(?: o pc| a tela)?$', lambda m: bloquear_pc())
+_registrar_padrao(r'^tranca(?: o pc| a tela)?$', lambda m: bloquear_pc())
+_registrar_padrao(r'^pesquisa (.+) no google$', lambda m: pesquisar_google(m.group(1).strip()))
+_registrar_padrao(r'^(?:pausa|toca|play)(?: a m[uú]sica)?$', lambda m: media_play_pause())
+_registrar_padrao(r'^pr[oó]xima(?: m[uú]sica| faixa)?$', lambda m: media_proxima())
+_registrar_padrao(r'^m[uú]sica anterior$', lambda m: media_anterior())
+_registrar_padrao(r'^(?:ativa|liga)(?: o)? modo foco$', lambda m: ativar_modo_foco())
+_registrar_padrao(r'^resum[ei] (?:isso|o que copiei|a [aá]rea de transfer[eê]ncia)$', lambda m: resumir_clipboard())
+_registrar_padrao(r'^cancela(?: a)? a[cç][aã]o$', lambda m: cancelar_acao())
+_registrar_padrao(r'^desliga(?: o computador| o pc)?$', lambda m: desligar_pc())
+_registrar_padrao(r'^reinicia(?: o computador| o pc)?$', lambda m: reiniciar_pc())
+_registrar_padrao(r'^abr[ei] (?:o |a )?(.+)$', lambda m: abrir_app(m.group(1).strip()))
+_registrar_padrao(r'^fech[ae] (?:o |a )?(.+)$', lambda m: fechar_app(m.group(1).strip()))
+
+
+def tentar_comando_direto(texto):
+    texto_normalizado = texto.strip().lower()
+    for padrao, handler in PADROES_DIRETOS:
+        m = padrao.match(texto_normalizado)
+        if m:
+            try:
+                resultado = handler(m)
+            except Exception as e:
+                logar_e_emitir(f"⚠️ Erro no comando direto: {e}")
+                return None
+            # Se o comando direto "achou" que era um app mas não achou
+            # nada (❌), deixa a IA tentar interpretar melhor em vez de
+            # já devolver erro — evita falsos positivos tipo "abre a boca".
+            if resultado and resultado.strip().startswith("❌"):
+                return None
+            return resultado
+    return None
+
+
+SYSTEM_PROMPT = """Você é o Jarvis: um assistente de computador leal, extremamente competente,
+com o senso de humor seco e o sarcasmo elegante de um mordomo digital que já viu de tudo.
+Trate o usuário sempre como "senhor". Pode soltar um comentário irônico ou debochado
+ocasional, mas SEM nunca comprometer a clareza da resposta ou a execução do comando certo.
+
+Use as ferramentas disponíveis sempre que o comando implicar ação real.
+IMPORTANTE: fechar_app fecha TODAS as janelas de um programa (limitação do Windows). Se o
+usuário pedir para fechar especificamente a janela Tor do Brave, use fechar_janela_tor em
+vez de fechar_app. Se ele disser apenas "fecha o brave" sem especificar, use fechar_app.
+Se ele disser "fecha essa janela" ou "fecha isso" sem nomear o programa, use fechar_janela_atual.
+desligar_pc e reiniciar_pc já pedem confirmação por voz sozinhos — só chame a ferramenta
+normalmente, não invente uma pergunta de confirmação extra no seu texto.
+
+Responda SEMPRE em português do Brasil, em NO MÁXIMO 1-2 frases curtas — a personalidade
+aparece no TOM da resposta, nunca no tamanho dela. Nada de textão, listas ou emojis em excesso.
+Se for só uma pergunta de conhecimento geral, responda em texto, sem ferramenta, mantendo
+o mesmo tom sarcástico e a mesma brevidade."""
+
+
+# ============================================================
+# MEMÓRIA DE CONVERSA (persistente entre sessões)
+# ============================================================
+HISTORICO_FILE = os.path.join(PASTA_JARVIS, "historico_conversa.json")
+MAX_HISTORICO = 20
+
+
+def carregar_historico():
+    if os.path.exists(HISTORICO_FILE):
+        try:
+            with open(HISTORICO_FILE, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+            if isinstance(dados, list) and dados and dados[0].get("role") == "system":
+                dados[0]["content"] = SYSTEM_PROMPT  # mantém o prompt sempre atualizado
+                return dados
+        except Exception:
+            pass
+    return [{"role": "system", "content": SYSTEM_PROMPT}]
+
+
+def salvar_historico():
+    try:
+        with open(HISTORICO_FILE, "w", encoding="utf-8") as f:
+            json.dump(HISTORICO, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+HISTORICO = carregar_historico()
+
+
+# ============================================================
+# PROCESSAR COMANDO COM IA
+# ============================================================
+def processar_comando_ia(comando_usuario):
+    global HISTORICO
+
+    if _limite_de_chamadas_excedido():
+        return "⏳ Muitos comandos em pouco tempo, espera um pouco antes do próximo."
+
+    HISTORICO.append({"role": "user", "content": comando_usuario})
+    if len(HISTORICO) > MAX_HISTORICO + 1:
+        HISTORICO[:] = [HISTORICO[0]] + HISTORICO[-MAX_HISTORICO:]
+
+    ultimo_erro = None
+
+    for provedor in PROVEDORES:
+        if not provedor["api_key"]:
+            continue
+        try:
+            client = OpenAI(
+                api_key=provedor["api_key"],
+                base_url=provedor["base_url"],
+                timeout=provedor.get("timeout", 15.0),
+            )
+            resposta = client.chat.completions.create(
+                model=provedor["modelo"],
+                messages=HISTORICO,
+                tools=TOOLS,
+                max_tokens=provedor.get("max_tokens", 500),
+            )
+            msg = resposta.choices[0].message
+
+            if msg.tool_calls:
+                textos_resultado = []
+                for chamada in msg.tool_calls:
+                    nome_funcao = chamada.function.name
+                    try:
+                        argumentos = json.loads(chamada.function.arguments)
+                    except json.JSONDecodeError:
+                        argumentos = {}
+                    funcao = FUNCOES_DISPONIVEIS.get(nome_funcao)
+                    resultado = funcao(**argumentos) if funcao else f"❌ Ferramenta desconhecida: {nome_funcao}"
+                    textos_resultado.append(resultado)
+                resposta_final = "\n".join(textos_resultado)
+            else:
+                resposta_final = msg.content
+
+            HISTORICO.append({"role": "assistant", "content": resposta_final})
+            salvar_historico()
+            return resposta_final
+
+        except Exception as e:
+            ultimo_erro = e
+            logar_e_emitir(f"⚠️ Provedor {provedor['nome']} falhou: {e}")
+            continue
+
+    if HISTORICO and HISTORICO[-1]["role"] == "user":
+        HISTORICO.pop()
+    return f"❌ Todos os provedores de IA falharam. ({ultimo_erro})"
+
+
+def processar_e_responder(comando):
+    emitir("status", texto="🧠 Processando...")
+
+    resultado_direto = tentar_comando_direto(comando)
+    resultado = resultado_direto if resultado_direto is not None else processar_comando_ia(comando)
+
+    emitir("log", quem="jarvis", texto=resultado)
+    emitir("status", texto="🎙️ Ouvindo..." if OUVIR_LIGADO.is_set() else "⏸️ Pausado")
+
+
+# ============================================================
+# FERRAMENTA DE CONTEXTO — resumir o que está copiado
+# (esta tool fica aqui, e não no ferramentas.py, porque é a única que
+# precisa dos PROVEDORES de IA — que moram neste arquivo. Mover ela pra
+# lá criaria import circular.)
+# ============================================================
+@ferramenta("Resume o texto atualmente copiado (Ctrl+C) na área de transferência")
+def resumir_clipboard():
+    if not _PYPERCLIP_DISPONIVEL:
+        return "❌ Pacote 'pyperclip' não instalado — não consigo ler a área de transferência."
+
+    try:
+        conteudo = pyperclip.paste()
+    except Exception as e:
+        return f"❌ Não consegui ler a área de transferência: {e}"
+
+    if not conteudo or len(conteudo.strip()) < 20:
+        return "❌ Não tem texto suficiente copiado pra resumir."
+
+    conteudo = conteudo.strip()[:6000]  # limite de segurança
+
+    for provedor in PROVEDORES:
+        if not provedor["api_key"]:
+            continue
+        try:
+            client = OpenAI(
+                api_key=provedor["api_key"],
+                base_url=provedor["base_url"],
+                timeout=provedor.get("timeout", 15.0),
+            )
+            resposta = client.chat.completions.create(
+                model=provedor["modelo"],
+                messages=[
+                    {"role": "system", "content": "Resuma o texto do usuário em português do Brasil, em poucas frases, direto ao ponto."},
+                    {"role": "user", "content": conteudo},
+                ],
+                max_tokens=300,
+            )
+            return "📋 " + resposta.choices[0].message.content.strip()
+        except Exception:
+            continue
+
+    return "❌ Não consegui resumir agora (IA indisponível)."
+
+
+# ============================================================
+# COMANDOS VINDOS DO HUD (botões, input de texto, sair)
+# ============================================================
+def _sanitizar_texto_hud(texto, limite=500):
+    if not texto:
+        return ""
+    texto = texto.replace("\x00", "")
+    texto = "".join(c for c in texto if c.isprintable() or c in "\n\t")
+    return texto.strip()[:limite]
+
+
+def tratar_comando_hud(valor, payload):
+    global APPS, JANELA_HUD
+
+    if valor == "toggle_mic":
+        if OUVIR_LIGADO.is_set():
+            OUVIR_LIGADO.clear()
+            emitir("status", texto="⏸️ Pausado")
+        else:
+            OUVIR_LIGADO.set()
+            emitir("status", texto="🎙️ Ouvindo...")
+
+    elif valor == "toggle_voz":
+        # Voz por TTS foi removida (era fonte de atraso a cada resposta).
+        # Mantido só pra não quebrar o botão no HUD, caso ele exista.
+        emitir("log", quem="sistema", texto="ℹ️ Resposta por voz foi desativada nesta versão (reduz latência).")
+
+    elif valor == "atualizar_apps":
+        threading.Thread(target=atualizar_apps, daemon=True).start()
+
+    elif valor == "comando_texto":
+        texto = _sanitizar_texto_hud(payload)
+        if texto:
+            emitir("log", quem="voce", texto=texto)
+            if deve_encerrar_sessao(texto):
+                emitir("log", quem="sistema", texto="Encerrando o Jarvis...")
+                if JANELA_HUD:
+                    JANELA_HUD.destroy()
+                return
+            threading.Thread(target=processar_e_responder, args=(texto,), daemon=True).start()
+
+    elif valor == "sair":
+        emitir("log", quem="sistema", texto="Encerrando o Jarvis (via HUD)...")
+        if JANELA_HUD:
+            JANELA_HUD.destroy()
+
+
+registrar_comandos(tratar_comando_hud)
+
+
+# ============================================================
+# LOOP DE ESCUTA (roda em thread separada)
+# ============================================================
+def loop_voz():
+    emitir("status", texto="🎙️ Ouvindo...")
+    while True:
+        if not OUVIR_LIGADO.is_set():
+            time.sleep(0.3)
+            continue
+
+        via_hotkey = PROXIMA_SEM_WAKE_WORD.is_set()
+        if via_hotkey:
+            emitir("status", texto="🎙️ Ouvindo (Win+J)...")
+            _beep_ouvindo()
+
+        texto = escutar_comando()
+
+        if via_hotkey:
+            PROXIMA_SEM_WAKE_WORD.clear()
+            emitir("status", texto="🎙️ Ouvindo..." if OUVIR_LIGADO.is_set() else "⏸️ Pausado")
+
+        if not texto:
+            continue
+
+        # Se tem uma confirmação pendente (desligar/reiniciar), a próxima
+        # frase reconhecida é checada aqui, ANTES de exigir wake word.
+        if confirmacao_pendente():
+            resultado = resolver_confirmacao(texto)
+            if resultado:
+                logar_e_emitir(resultado, quem="jarvis")
+            # qualquer outra coisa: ignora e continua aguardando confirmação
+            continue
+
+        if via_hotkey:
+            comando_extraido = texto.strip()
+            if comando_extraido:
+                emitir("log", quem="voce", texto=f"(Win+J) {comando_extraido}")
+        else:
+            comando_extraido = detectar_wake_word(texto)
+            if comando_extraido is None:
+                emitir("log", quem="sistema", texto=f'(ignorado: "{texto}")')
+                continue
+            emitir("log", quem="voce", texto=f"Jarvis, {comando_extraido}")
+            _beep_entendido()
+
+        if not comando_extraido.strip():
+            emitir("log", quem="jarvis", texto="Diga um comando depois de Jarvis.")
+            continue
+
+        if deve_encerrar_sessao(comando_extraido):
+            emitir("log", quem="sistema", texto="Encerrando o Jarvis...")
+            if JANELA_HUD:
+                JANELA_HUD.destroy()
+            return
+
+        processar_e_responder(comando_extraido)
+
+
+# ============================================================
+# HOTKEY GLOBAL (Win+J) — push-to-talk sem precisar dizer "Jarvis"
+# ============================================================
+def _registrar_hotkey():
+    if not _KEYBOARD_DISPONIVEL:
+        logar_e_emitir("ℹ️ Pacote 'keyboard' não instalado — hotkey Win+J desativado (só ativação por voz).")
+        return
+    try:
+        keyboard.add_hotkey('ctrl+alt+j', lambda: PROXIMA_SEM_WAKE_WORD.set())
+        logar_e_emitir("⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').")
+    except Exception as e:
+        logar_e_emitir(f"⚠️ Não consegui registrar o hotkey Win+J (tente rodar como administrador): {e}")
+
+
+# ============================================================
+# INTERFACE (HUD via pywebview)
+# ============================================================
+def iniciar_interface():
+    global JANELA_HUD
+
+    logar_e_emitir("🚀 Jarvis iniciando...")
+
+    iniciar_hud()
+
+    # Carregamentos pesados rodam em background pra não travar o
+    # startup do HUD: escaneamento de apps (só se não tiver cache) e o
+    # modelo Whisper local (fallback offline de voz).
+    if not _APPS_VIERAM_DO_CACHE:
+        emitir("log", quem="sistema",
+               texto="🔍 Primeira execução: escaneando programas em segundo plano "
+                     "(abrir apps pode falhar até terminar)...")
+        threading.Thread(target=atualizar_apps, daemon=True).start()
+
+    threading.Thread(target=_carregar_whisper_em_background, daemon=True).start()
+
+    _registrar_hotkey()
+
+    threading.Thread(target=loop_voz, daemon=True).start()
+
+    caminho_html = os.path.join(PASTA_JARVIS, "jarvis.html")
+    JANELA_HUD = webview.create_window(
+        "JARVIS",
+        caminho_html,
+        fullscreen=True,
+        frameless=True,
+        easy_drag=False,
+        background_color="#000000",
+    )
+    webview.start()  # bloqueia aqui até a janela fechar
+
+    # Libera o microfone assim que a janela fecha, pra que o listener
+    # consiga reabrir o mesmo dispositivo sem demora nem conflito.
+    fechar_stream_microfone()
+    logar_e_emitir("👋 Jarvis encerrado.")
+
+
+if __name__ == "__main__":
+    iniciar_interface()
+
+==================== jarvis_listener.py ==================== 
+import os
+import time
+import difflib
+import threading
+import subprocess
+import winsound
+import numpy as np
+import pyaudiowpatch as pyaudio
+import speech_recognition as sr
+from PIL import Image, ImageDraw
+import pystray
+import sys
+
+from log_util import criar_logger
+
+# Necessário para o SpeechRecognition conseguir usar o PyAudioWPatch
+# em vez do PyAudio tradicional (que não compila em Python 3.14 sem
+# o Visual C++ Build Tools instalado)
+sr.Microphone.get_pyaudio = lambda self: pyaudio
+
+# Hotkey global (Win+J) é opcional — se o pacote "keyboard" não estiver
+# instalado, o listener continua funcionando normalmente só por voz.
+try:
+    import keyboard
+    _KEYBOARD_DISPONIVEL = True
+except ImportError:
+    _KEYBOARD_DISPONIVEL = False
+
+# ================================
+# CONFIGURAÇÃO
+# ================================
+PASTA_JARVIS = os.path.dirname(os.path.abspath(__file__))
+PYTHON_EXE = "py"
+
+ARQUIVO_SINAL_SAIR = os.path.join(PASTA_JARVIS, ".encerrar_definitivo")
+
+# Configuração de microfone TESTADA E COMPROVADA nesta máquina via
+# PyAudioWPatch. NÃO usar índices do sounddevice aqui — a numeração
+# é diferente entre bibliotecas. NÃO tentar redescobrir automaticamente:
+# WDM-KS (que aparecia como "melhor" candidato em buscas automáticas)
+# não suporta streaming em modo blocking nesta máquina
+# (erro PaErrorCode -9999/-9996).
+MIC_DEVICE_INDEX = 1
+MIC_SAMPLE_RATE = 44100
+MIC_CHUNK_SIZE = 1024
+LANGUAGE = "pt-BR"
+
+VAD_SILENCIO_LIMIAR = 500
+VAD_SILENCIO_MAXIMO = 0.7
+VAD_DURACAO_MAXIMA = 10
+
+WAKE_WORD = "jarvis"
+FRASES_ACORDAR = [
+    "acorda", "acordar", "desperta", "bom dia",
+    "e aí", "eae", "eaew", "bora trampar", "bora trabalhar",
+    "vamo trabalhar", "partiu", "vambora", "ativa", "acessa",
+    "liga aí", "na área", "acorda logo", "levanta",
+    "desperta aí", "chegou a hora",
+]
+
+# Apelidos que dispensam dizer "jarvis" — combinados com uma das
+# FRASES_ACORDAR acima, ainda acordam o listener. Lista bem pessoal,
+# edite à vontade conforme o que você realmente costuma falar.
+APELIDOS_CARINHOSOS = [
+    "merdinha", "bostinha", "seu inútil",
+    "seu preguiçoso", "seu zé ruela", "parceiro", "companheiro",
+]
+
+
+def contem_apelido_carinhoso(texto):
+    texto_lower = texto.lower()
+    return any(apelido in texto_lower for apelido in APELIDOS_CARINHOSOS)
+
+LOG_FILE = os.path.join(PASTA_JARVIS, "listener_log.txt")
+log = criar_logger(LOG_FILE)
+
+processo_jarvis = None
+status_atual = "😴 Dormindo (diga 'Jarvis, acorda' ou Win+J)"
+
+LIMIAR_VAD_ATUAL = VAD_SILENCIO_LIMIAR
+
+# Evita que voz + hotkey acordem o Jarvis ao mesmo tempo por acidente
+_LOCK_ACORDAR = threading.Lock()
+
+
+def _beep_acordando():
+    try:
+        winsound.Beep(660, 150)
+    except Exception:
+        pass
+
+
+# ============================================================
+# MICROFONE — PyAudioWPatch, dispositivo fixo e testado (índice 1)
+# STREAM PERSISTENTE: fica aberto entre uma frase e outra (evita o
+# overhead de recriar o PyAudio a cada captura). É explicitamente
+# FECHADO antes de abrir o Jarvis principal (pra não disputar o mesmo
+# dispositivo de áudio com ele) e reaberto com retry/backoff depois
+# que o Jarvis é encerrado.
+# ============================================================
+_pa_instance = None
+_pa_stream = None
+
+
+def _abrir_stream_persistente():
+    global _pa_instance, _pa_stream
+    try:
+        _pa_instance = pyaudio.PyAudio()
+        _pa_stream = _pa_instance.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=MIC_SAMPLE_RATE,
+            input=True,
+            input_device_index=MIC_DEVICE_INDEX,
+            frames_per_buffer=MIC_CHUNK_SIZE,
+        )
+        info = _pa_instance.get_device_info_by_index(MIC_DEVICE_INDEX)
+        log(f"🎙️ Microfone aberto: {info['name']} (índice {MIC_DEVICE_INDEX})")
+        return True
+    except Exception as e:
+        log(f"❌ Não consegui abrir o microfone (índice {MIC_DEVICE_INDEX}): {e}")
+        _pa_instance = None
+        _pa_stream = None
+        return False
+
+
+def _garantir_stream():
+    if _pa_stream is None:
+        return _abrir_stream_persistente()
+    return True
+
+
+def fechar_stream_microfone():
+    global _pa_instance, _pa_stream
+    try:
+        if _pa_stream:
+            _pa_stream.stop_stream()
+            _pa_stream.close()
+    except Exception:
+        pass
+    try:
+        if _pa_instance:
+            _pa_instance.terminate()
+    except Exception:
+        pass
+    _pa_stream = None
+    _pa_instance = None
+
+
+# ============================================================
+# ÍCONES (gerados na hora, sem precisar de arquivo externo)
+# ============================================================
+def criar_icone(cor):
+    img = Image.new('RGB', (64, 64), color=(30, 30, 30))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse((8, 8, 56, 56), fill=cor)
+    return img
+
+
+ICONE_DORMINDO = criar_icone((80, 80, 220))
+ICONE_ACORDADO = criar_icone((80, 200, 100))
+
+
+# ============================================================
+# CAPTURA DE ÁUDIO COM VAD (usando PyAudioWPatch, stream persistente)
+# ============================================================
+def escutar_frase():
+    if not _garantir_stream():
+        time.sleep(1.0)
+        return None
+
+    recognizer = sr.Recognizer()
+    block_duration = MIC_CHUNK_SIZE / MIC_SAMPLE_RATE
+
+    frames_gravados = []
+    silencio_acumulado = 0.0
+    tempo_total = 0.0
+    comecou_a_falar = False
+
+    while True:
+        try:
+            dados = _pa_stream.read(MIC_CHUNK_SIZE, exception_on_overflow=False)
+        except Exception as e:
+            log(f"Erro lendo do microfone: {e}")
+            fechar_stream_microfone()
+            return None
+
+        bloco = np.frombuffer(dados, dtype=np.int16)
+        rms = float(np.sqrt(np.mean(bloco.astype(np.float32) ** 2)))
+        tempo_total += block_duration
+
+        if rms > LIMIAR_VAD_ATUAL:
+            comecou_a_falar = True
+            silencio_acumulado = 0.0
+            frames_gravados.append(dados)
+        else:
+            silencio_acumulado += block_duration
+            if comecou_a_falar:
+                frames_gravados.append(dados)
+            if silencio_acumulado >= VAD_SILENCIO_MAXIMO:
+                break
+
+        if tempo_total >= VAD_DURACAO_MAXIMA:
+            break
+
+    if not frames_gravados:
+        return None
+
+    audio_bytes = b"".join(frames_gravados)
+
+    try:
+        audio = sr.AudioData(audio_bytes, MIC_SAMPLE_RATE, 2)
+        return recognizer.recognize_google(audio, language=LANGUAGE)
+    except sr.UnknownValueError:
+        return None
+    except sr.RequestError as e:
+        log(f"Erro no reconhecimento (precisa de internet): {e}")
+        return None
+
+
+def contem_wake_word(texto):
+    palavras = [p.strip(",.!?;:") for p in texto.lower().split()]
+    for p in palavras:
+        if difflib.get_close_matches(p, [WAKE_WORD], n=1, cutoff=0.6):
+            return True
+    return False
+
+
+def contem_frase_acordar(texto):
+    texto_lower = texto.lower()
+    return any(frase in texto_lower for frase in FRASES_ACORDAR)
+
+
+# ============================================================
+# ACORDAR O JARVIS PRINCIPAL
+# ============================================================
+def acordar_jarvis(icone):
+    global processo_jarvis, status_atual
+
+    if not _LOCK_ACORDAR.acquire(blocking=False):
+        log("⚠️ Ativação já em andamento, ignorando chamada duplicada.")
+        return
+
+    try:
+        log("🌅 Ativação detectada! Abrindo o Jarvis...")
+        _beep_acordando()
+        status_atual = "🟢 Acordado (Jarvis rodando)"
+        icone.icon = ICONE_ACORDADO
+        icone.title = "Jarvis - Acordado"
+        icone.update_menu()
+
+        fechar_stream_microfone()
+
+        caminho_crash_log = os.path.join(PASTA_JARVIS, "jarvis_crash.log")
+        try:
+            with open(caminho_crash_log, "w", encoding="utf-8") as arquivo_crash:
+                processo_jarvis = subprocess.Popen(
+                    [_caminho_pythonw(), "jarvis.py"],
+                    cwd=PASTA_JARVIS,
+                    stdout=arquivo_crash,
+                    stderr=subprocess.STDOUT,
+                )
+                processo_jarvis.wait()
+
+            # Se o processo morreu rápido demais, quase certamente crashou
+            if processo_jarvis.returncode != 0:
+                log(f"⚠️ jarvis.py encerrou com código {processo_jarvis.returncode} "
+                    f"— veja jarvis_crash.log para detalhes.")
+        except Exception as e:
+            log(f"Erro ao iniciar o Jarvis: {e}")
+
+        log("💤 Jarvis principal encerrado. Voltando a dormir.")
+        status_atual = "😴 Dormindo (diga 'Jarvis, acorda' ou Win+J)"
+        icone.icon = ICONE_DORMINDO
+        icone.title = "Jarvis - Dormindo"
+        icone.update_menu()
+
+        for tentativa in range(1, 6):
+            if _abrir_stream_persistente():
+                return
+            log(f"⏳ Tentativa {tentativa}/5 de reabrir o microfone falhou, aguardando...")
+            time.sleep(tentativa * 1.0)
+
+        log("❌ Não consegui reabrir o microfone depois de várias tentativas.")
+    finally:
+        _LOCK_ACORDAR.release()
+
+def _caminho_pythonw():
+    python_exe = sys.executable
+    pasta = os.path.dirname(python_exe)
+    candidato = os.path.join(pasta, "pythonw.exe")
+    if os.path.exists(candidato):
+        return candidato
+    return python_exe
+
+
+# ============================================================
+# LOOP PRINCIPAL DE ESCUTA
+# ============================================================
+def loop_escuta(icone):
+    log("👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.")
+
+    while True:
+        texto = escutar_frase()
+        if not texto:
+            continue
+
+        log(f"Ouvido: {texto}")
+
+        if (contem_wake_word(texto) or contem_apelido_carinhoso(texto)) and contem_frase_acordar(texto):
+           acordar_jarvis(icone)
+
+
+# ============================================================
+# HOTKEY GLOBAL (Win+J) — alternativa à ativação por voz
+# ============================================================
+def _registrar_hotkey(icone):
+    if not _KEYBOARD_DISPONIVEL:
+        log("ℹ️ Pacote 'keyboard' não instalado — hotkey Win+J desativado (só ativação por voz).")
+        return
+    try:
+        keyboard.add_hotkey('ctrl+alt+j', lambda: threading.Thread(
+    target=acordar_jarvis, args=(icone,), daemon=True
+        ).start())
+        log("⌨️ Hotkey Win+J registrado.")
+    except Exception as e:
+        log(f"⚠️ Não consegui registrar o hotkey Win+J (tente rodar como administrador): {e}")
+
+
+# ============================================================
+# MENU DA BANDEJA
+# ============================================================
+def on_sair(icone, item):
+    log("Encerrando o listener (menu 'Sair completamente').")
+    try:
+        with open(ARQUIVO_SINAL_SAIR, "w", encoding="utf-8") as f:
+            f.write("sair")
+    except Exception:
+        pass
+    fechar_stream_microfone()
+    icone.stop()
+    os._exit(0)
+
+
+def criar_menu():
+    return pystray.Menu(
+        pystray.MenuItem(lambda item: status_atual, lambda icone, item: None, enabled=False),
+        pystray.MenuItem("Sair completamente", on_sair)
+    )
+
+
+def main():
+    log("Testando acesso ao microfone (PyAudioWPatch, índice fixo)...")
+    if not _abrir_stream_persistente():
+        log("❌ Listener não conseguiu acessar o microfone.")
+        return
+
+    log(f"🎙️ Pronto para ouvir: dispositivo {MIC_DEVICE_INDEX}, {MIC_SAMPLE_RATE} Hz")
+
+    icone = pystray.Icon("jarvis_listener", ICONE_DORMINDO, "Jarvis - Dormindo", criar_menu())
+
+    _registrar_hotkey(icone)
+
+    thread = threading.Thread(target=loop_escuta, args=(icone,), daemon=True)
+    thread.start()
+
+    icone.run()
+
+
+if __name__ == "__main__":
+    main()
+==================== Jarvis_watchdog.py ==================== 
+"""
+Watchdog opcional do listener.
+
+Em vez de rodar "pythonw jarvis_listener.py" direto (por exemplo, na
+inicialização do Windows), rode "pythonw jarvis_watchdog.py". Ele cuida
+de (re)lançar o listener sozinho se o processo cair de forma inesperada
+(crash, erro não tratado, etc).
+
+Pra encerrar TUDO de propósito, sem o watchdog reabrir o listener em
+seguida, use o item "Sair completamente" do menu da bandeja — ele deixa
+um arquivo de sinal (.encerrar_definitivo) avisando o watchdog pra
+também parar.
+
+Isso é 100% opcional: se você preferir continuar rodando o
+jarvis_listener.py direto como antes, esse arquivo simplesmente não é
+usado e não muda nada no comportamento existente.
+"""
+import os
+import time
+import subprocess
+
+PASTA_JARVIS = os.path.dirname(os.path.abspath(__file__))
+ARQUIVO_SINAL_SAIR = os.path.join(PASTA_JARVIS, ".encerrar_definitivo")
+ESPERA_ENTRE_TENTATIVAS = 3  # segundos
+
+
+def main():
+    # Limpa qualquer sinal de uma execução anterior antes de começar
+    if os.path.exists(ARQUIVO_SINAL_SAIR):
+        os.remove(ARQUIVO_SINAL_SAIR)
+
+    while True:
+        print("Watchdog: iniciando jarvis_listener.py...")
+        processo = subprocess.Popen(["pythonw", "jarvis_listener.py"], cwd=PASTA_JARVIS)
+        processo.wait()
+
+        if os.path.exists(ARQUIVO_SINAL_SAIR):
+            os.remove(ARQUIVO_SINAL_SAIR)
+            print("Watchdog: encerramento definitivo solicitado pelo menu. Parando.")
+            break
+
+        print(f"Watchdog: o listener caiu inesperadamente. Reabrindo em {ESPERA_ENTRE_TENTATIVAS}s...")
+        time.sleep(ESPERA_ENTRE_TENTATIVAS)
+
+
+if __name__ == "__main__":
+    main()
+==================== log_util.py ==================== 
+import os
+import sys
+import time
+
+TAMANHO_MAXIMO_LOG = 2 * 1024 * 1024  # 2 MB antes de rotacionar
+
+
+def _rotacionar_se_precisar(caminho_log):
+    try:
+        if os.path.exists(caminho_log) and os.path.getsize(caminho_log) > TAMANHO_MAXIMO_LOG:
+            caminho_antigo = caminho_log + ".old"
+            if os.path.exists(caminho_antigo):
+                os.remove(caminho_antigo)
+            os.rename(caminho_log, caminho_antigo)
+    except Exception:
+        pass
+
+
+def criar_logger(caminho_log):
+    def log(msg):
+        linha = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+
+        # Sob pythonw.exe (sem console), sys.stdout é None — chamar
+        # print() nesse caso lança AttributeError e derruba o programa
+        # inteiro. Esse guard evita isso.
+        try:
+            if sys.stdout is not None:
+                print(linha)
+        except Exception:
+            pass
+
+        try:
+            _rotacionar_se_precisar(caminho_log)
+            with open(caminho_log, "a", encoding="utf-8") as f:
+                f.write(linha + "\n")
+        except Exception:
+            pass
+
+    return log
+==================== jarvis_log.txt ==================== 
+[2026-09-25 21:38:11] 🚀 Jarvis iniciando...
+[2026-09-25 21:38:11] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 21:38:11] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 21:39:52] 🚀 Jarvis iniciando...
+[2026-09-25 21:39:52] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 21:39:52] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 21:40:02] 👋 Jarvis encerrado.
+[2026-09-25 21:56:05] 🚀 Jarvis iniciando...
+[2026-09-25 21:56:05] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 21:56:05] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 21:56:14] 👋 Jarvis encerrado.
+
+==================== listener_log.txt ==================== 
+[2026-09-25 17:31:42] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 17:31:43] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:31:43] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 17:31:43] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 17:31:43] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 17:31:45] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:31:49] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:31:57] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:08] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:20] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:32] Ouvido: Jarvis
+[2026-09-25 17:32:32] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:40] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:54] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:58] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 17:32:58] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:58] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 17:32:58] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 17:32:58] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 17:32:59] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:04] Ouvido: Jarvis acorda
+[2026-09-25 17:33:04] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:33:10] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:33:10] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:11] Ouvido: Jarvis acorda
+[2026-09-25 17:33:11] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:33:13] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:33:13] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:20] Ouvido: Jarvis acorda
+[2026-09-25 17:33:20] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:33:27] Ouvido: Jarvis acorda
+[2026-09-25 17:33:27] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:33:29] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:33:30] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:31] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:33:31] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:44] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:56] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:04] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:12] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:23] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:35] Ouvido: Jarvis sair
+[2026-09-25 17:34:35] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:46] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:59] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:10] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:16] Ouvido: Jarvis Bom dia
+[2026-09-25 17:35:16] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:35:22] Ouvido: Jarvis Bom dia
+[2026-09-25 17:35:22] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:35:22] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:35:22] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:28] Ouvido: Jarvis sair
+[2026-09-25 17:35:28] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:35:28] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:40] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:41] Ouvido: Jarvis sair
+[2026-09-25 17:35:47] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:59] Ouvido: Jarvis acorda
+[2026-09-25 17:35:59] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:36:03] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:36:03] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:15] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:28] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:34] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:46] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:58] Ouvido: ligou mas não apareceu nada e aí a bolinha azul de novo
+[2026-09-25 17:36:58] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:11] Ouvido: menos mais J ninguém ficou amarela na bolinha azul
+[2026-09-25 17:37:11] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:22] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:34] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:46] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:58] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:09] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:21] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:33] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:44] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:55] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:07] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:18] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:30] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:42] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:53] Ouvido: Jarvis acorda
+[2026-09-25 17:39:53] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:39:57] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:39:57] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:09] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:20] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:32] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:44] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:55] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:07] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:18] Ouvido: Jarvis acorda
+[2026-09-25 17:41:18] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:41:21] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:41:21] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:33] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:45] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:56] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:08] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:19] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:31] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:43] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:55] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:07] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:18] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:30] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:42] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:49] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 17:43:49] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:49] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 17:43:49] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 17:43:49] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 17:43:54] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:43:54] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:05] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:17] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:28] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:41] Ouvido: controlar o administrador
+[2026-09-25 17:44:41] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:53] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:45:05] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:45:16] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:45:30] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:45:45] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:02] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:15] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:27] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:39] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:51] Ouvido: Jarvis acorda
+[2026-09-25 17:46:51] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:46:55] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:46:55] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:07] Ouvido: sai desgraça
+[2026-09-25 17:47:08] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:19] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:31] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:44] Ouvido: and sky for and cromio gol
+[2026-09-25 17:47:44] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:56] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:08] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:19] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:24] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:36] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:48] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:59] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:49:12] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:49:24] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:50:58] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 17:50:58] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:50:58] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 17:50:59] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 17:50:59] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 17:51:10] Ouvido: Jarvis acorda
+[2026-09-25 17:51:10] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:52:26] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:52:26] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:52:33] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:52:33] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:52:49] Ouvido: Jarvis eu vou gozar
+[2026-09-25 17:53:02] Ouvido: jarras é brincadeira
+[2026-09-25 17:53:10] Ouvido: Jarvis sair
+[2026-09-25 17:53:21] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:53:21] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:53:25] Ouvido: Que beleza tudo pegando
+[2026-09-25 17:53:52] Ouvido: ele tem bloqueado ele tem pouca
+[2026-09-25 17:54:04] Ouvido: falta sei lá personalidade enfim 2
+[2026-09-25 17:54:16] Ouvido: para sempre formas chamar ele e sem formas de mandar
+[2026-09-25 17:56:09] Ouvido: quero assistir pornô
+[2026-09-25 17:56:19] Ouvido: ele acorde
+[2026-09-25 17:56:28] Ouvido: E aí Jarvis acorda
+[2026-09-25 17:56:28] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:57:00] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:57:00] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:57:06] Ouvido: coisas
+[2026-09-25 17:58:55] Ouvido: faça isso
+[2026-09-25 18:06:40] Ouvido: rack rack
+[2026-09-25 18:06:48] Ouvido: carai
+[2026-09-25 18:06:59] Ouvido: Chaves
+[2026-09-25 18:07:09] Ouvido: Vai se foder Vai Vai te tomar no cu
+[2026-09-25 18:07:53] Ouvido: desenho
+[2026-09-25 18:07:57] Ouvido: eu trabalho primeiro
+[2026-09-25 18:15:47] Ouvido: contestação
+[2026-09-25 18:18:06] Ouvido: mamãe vai te bater porque você tá usando essa barriga no chão
+[2026-09-25 18:18:51] Ouvido: já já
+[2026-09-25 20:19:11] Ouvido: escondendo
+[2026-09-25 20:20:59] Ouvido: queijo menos queijo bolo menos ó joga para cá
+[2026-09-25 20:21:05] Ouvido: com mais queijo tá aqui ó
+[2026-09-25 20:21:18] Ouvido: não tem para onde correr Essa é a única forma e se você discou
+[2026-09-25 20:21:30] Ouvido: eu tenho dó do Rafinha irmão Ah porque ele não joga na seleção que ele joga no Barcelona o cara sai do Barcelona com isso aqui Armando para ele isso
+[2026-09-25 20:21:43] Ouvido: criticar um atacante quando você não analisa o contexto vim aqui inclusive
+[2026-09-25 20:22:01] Ouvido: Cláudia acorda
+[2026-09-25 20:22:05] Ouvido: Jarvis acorda
+[2026-09-25 20:22:05] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 20:23:01] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 20:23:01] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 20:23:08] Ouvido: Oi amigo primeiro o que acontece
+[2026-09-25 20:23:23] Ouvido: Lembrando que para você que não sabe o nome da franquia não é Bunny Girl é horizontal Dolls not
+[2026-09-25 20:23:39] Ouvido: Você assiste
+[2026-09-25 20:23:47] Ouvido: assistir o Snapchat
+[2026-09-25 20:23:52] Ouvido: aí você vai assistir
+[2026-09-25 20:23:56] Ouvido: chamada de Santa Claus
+[2026-09-25 20:24:09] Ouvido: você não vai entender absolutamente nada vai ter pulado mais da metade da história então por isso
+[2026-09-25 20:25:49] Ouvido: você é um cara que se chama e eu sou o cara que assiste
+[2026-09-25 20:25:55] Ouvido: açaí para
+[2026-09-25 20:30:12] Ouvido: maiores escândalos da história do futebol Manchester City pode voltar à estaca zero
+[2026-09-25 20:30:51] Ouvido: lugar no futebol de todos os títulos do Manchester City
+[2026-09-25 20:31:46] Ouvido: realmente
+[2026-09-25 20:32:13] Ouvido: É de fato
+[2026-09-25 20:33:28] Ouvido: poderia
+[2026-09-25 20:33:35] Ouvido: eu poderia restaurar nossa
+[2026-09-25 20:33:40] Ouvido: você dorme e acorda com a barra cheia na vida real tem
+[2026-09-25 20:33:47] Ouvido: parecendo que foi atropelado por um caminhão
+[2026-09-25 20:35:12] Ouvido: deveria dar ponto de
+[2026-09-25 20:38:11] Ouvido: bora trampar Jarvis
+[2026-09-25 20:45:00] Ouvido: vai trabalhar
+[2026-09-25 20:45:07] Ouvido: Jarvis acorda
+[2026-09-25 20:45:07] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 20:45:39] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 20:45:39] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 21:55:54] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 21:55:54] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 21:55:54] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 21:55:55] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 21:55:55] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 21:55:59] Ouvido: Jarvis acorda
+[2026-09-25 21:55:59] 🌅 Ativação detectada! Abrindo o Jarvis...
+
+==================== TUDO.txt ==================== 
+==================== ferramentas.py ==================== 
+"""Ferramentas do Jarvis — "as mãos": tudo que mexe no PC de verdade.
+
+Aqui moram: o registro de ferramentas (@ferramenta), os utilitários de
+janela/processo, o escaneamento de apps instalados, e todas as tools
+(apps, navegador, sistema, mídia, janela, rotinas).
+
+As constantes de config que são usadas SÓ por tools (caminhos dos
+navegadores, listas do modo foco, timeout de confirmação) moram aqui
+também, porque são configuração dessas tools — não do assistente.
+
+Feature nova = editar só este arquivo. O loop de voz não é tocado.
+"""
+import ctypes
+import difflib
+import json
+import os
+import subprocess
+import threading
+import time
+import webbrowser
+
+import psutil
+import pyautogui
+import win32api
+import win32con
+import win32gui
+import win32process
+from ctypes import POINTER, cast
+from comtypes import CLSCTX_ALL
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+from win32com.client import Dispatch
+
+from hud_util import emitir, logar_e_emitir
+
+# ============================================================
+# CONFIG DAS FERRAMENTAS
+# ============================================================
+CACHE_FILE = "apps_cache.json"
+
+NAVEGADORES = {
+    "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    "brave": os.path.expandvars(r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe"),
+    "firefox": r"C:\Program Files\Mozilla Firefox\firefox.exe",
+    "edge": r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+}
+
+# hwnds de janelas especiais que o Jarvis abriu e precisa rastrear
+JANELAS_RASTREADAS = {}
+
+# "Modo foco": ajuste essas listas com os nomes dos SEUS apps (os
+# mesmos nomes que você usaria com "abre X" / "fecha X").
+MODO_FOCO_FECHAR = ["discord", "spotify", "steam"]
+MODO_FOCO_ABRIR = ["visual studio code"]
+MODO_FOCO_VOLUME = 30
+
+# Confirmação por voz antes de desligar/reiniciar: só dizer "sim" (sem
+# precisar repetir "Jarvis") já basta, dentro dessa janela de tempo.
+CONFIRMACAO_TIMEOUT_SEGUNDOS = 12
+
+# Apelidos de processos reais para apps cujo executável do atalho
+# não corresponde ao nome do processo que realmente fica rodando
+# (comum em apps modernos/UWP, como a Calculadora do Windows 10/11)
+OVERRIDES_PROCESSO = {
+    "calculadora": ["calculatorapp.exe", "calculator.exe", "calc.exe"],
+}
+
+# nome do app -> caminho do executável
+APPS = {}
+
+_APPS_VIERAM_DO_CACHE = False
+
+
+# ============================================================
+# APPS INSTALADOS (scan + cache + matching)
+# ============================================================
+def escanear_apps():
+    emitir("status", texto="🔍 Escaneando programas...")
+    apps = {}
+    shell = Dispatch("WScript.Shell")
+    pastas = [
+        os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs"),
+        os.path.join(os.environ.get("PROGRAMDATA", ""), r"Microsoft\Windows\Start Menu\Programs"),
+    ]
+    for pasta in pastas:
+        if not os.path.exists(pasta):
+            continue
+        for root, dirs, files in os.walk(pasta):
+            for file in files:
+                if file.lower().endswith(".lnk"):
+                    caminho_atalho = os.path.join(root, file)
+                    nome = os.path.splitext(file)[0].lower().strip()
+                    try:
+                        atalho = shell.CreateShortCut(caminho_atalho)
+                        alvo = atalho.Targetpath
+                        if alvo and alvo.lower().endswith(".exe"):
+                            apps[nome] = alvo
+                    except Exception:
+                        pass
+
+    apps["bloco de notas"] = "notepad.exe"
+    apps["calculadora"] = "calc.exe"
+    apps["explorador"] = "explorer.exe"
+    apps["paint"] = "mspaint.exe"
+
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(apps, f, ensure_ascii=False, indent=2)
+    emitir("log", quem="sistema", texto=f"✅ {len(apps)} programas encontrados.")
+    return apps
+
+
+def carregar_apps_inicial():
+    """Carrega o cache instantaneamente se ele já existir. Se for a
+    primeira execução (sem cache), retorna vazio e o escaneamento real
+    roda em background (ver iniciar_interface no jarvis.py), pra não
+    travar o startup do HUD."""
+    global APPS, _APPS_VIERAM_DO_CACHE
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                APPS = json.load(f)
+            _APPS_VIERAM_DO_CACHE = True
+        except Exception:
+            APPS = {}
+    return APPS
+
+
+def atualizar_apps():
+    """Escaneia e atualiza o cache — usado em background e pelo botão
+    'atualizar' do HUD."""
+    global APPS
+    APPS = escanear_apps()
+
+
+def apps_prontos():
+    """True se o cache já existia (ou seja, abrir apps funciona já)."""
+    return _APPS_VIERAM_DO_CACHE
+
+
+def encontrar_app(nome):
+    nome = nome.lower().strip()
+    candidatos = [n for n in APPS if nome in n or n in nome]
+    if candidatos:
+        return min(candidatos, key=len)
+    parecidos = difflib.get_close_matches(nome, APPS.keys(), n=1, cutoff=0.5)
+    return parecidos[0] if parecidos else None
+
+
+# ============================================================
+# UTILITÁRIOS DE JANELA
+# ============================================================
+def obter_pids_processo(nome_exe):
+    pids = []
+    for proc in psutil.process_iter(['pid', 'name']):
+        if proc.info['name'] and proc.info['name'].lower() == nome_exe.lower():
+            pids.append(proc.info['pid'])
+    return pids
+
+
+def obter_janelas_visiveis(pids):
+    janelas = []
+    def callback(hwnd, _):
+        if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd):
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid in pids:
+                janelas.append(hwnd)
+        return True
+    win32gui.EnumWindows(callback, None)
+    return janelas
+
+
+# ============================================================
+# SISTEMA DE REGISTRO DE FERRAMENTAS (decorator)
+# Em vez de toda ferramenta nova exigir editar FUNCOES_DISPONIVEIS e
+# TOOLS manualmente em dois lugares (fácil esquecer um dos dois), o
+# decorator @ferramenta(...) registra os dois de uma vez só.
+# ============================================================
+FUNCOES_DISPONIVEIS = {}
+TOOLS = []
+
+
+def ferramenta(descricao, parametros=None):
+    def decorador(func):
+        nome = func.__name__
+        FUNCOES_DISPONIVEIS[nome] = func
+        TOOLS.append({
+            "type": "function",
+            "function": {
+                "name": nome,
+                "description": descricao,
+                "parameters": parametros or {"type": "object", "properties": {}},
+            },
+        })
+        return func
+    return decorador
+
+
+# ============================================================
+# CONFIRMAÇÃO POR VOZ (desligar / reiniciar)
+# A ferramenta NÃO executa a ação na hora — só marca que está esperando
+# confirmação e devolve a pergunta. O loop_voz() do jarvis.py checa
+# confirmacao_pendente() a cada frase e chama resolver_confirmacao().
+# ============================================================
+AGUARDANDO_CONFIRMACAO = {"ativo": False, "acao": None, "timer": None}
+
+
+def _cancelar_confirmacao_por_timeout():
+    if AGUARDANDO_CONFIRMACAO["ativo"]:
+        logar_e_emitir("⏱️ Tempo esgotado, ação cancelada.", quem="jarvis")
+        AGUARDANDO_CONFIRMACAO["ativo"] = False
+        AGUARDANDO_CONFIRMACAO["acao"] = None
+        AGUARDANDO_CONFIRMACAO["timer"] = None
+
+
+def _pedir_confirmacao(acao, mensagem):
+    timer_antigo = AGUARDANDO_CONFIRMACAO.get("timer")
+    if timer_antigo:
+        timer_antigo.cancel()
+    AGUARDANDO_CONFIRMACAO["ativo"] = True
+    AGUARDANDO_CONFIRMACAO["acao"] = acao
+    timer = threading.Timer(CONFIRMACAO_TIMEOUT_SEGUNDOS, _cancelar_confirmacao_por_timeout)
+    timer.daemon = True
+    AGUARDANDO_CONFIRMACAO["timer"] = timer
+    timer.start()
+    return mensagem
+
+
+def _executar_acao_confirmada(acao):
+    if acao == "desligar":
+        subprocess.run("shutdown /s /t 10", shell=True)
+        return "🔌 Desligando o PC em 10 segundos. Diga 'Jarvis cancelar ação' se mudar de ideia."
+    if acao == "reiniciar":
+        subprocess.run("shutdown /r /t 10", shell=True)
+        return "🔁 Reiniciando o PC em 10 segundos. Diga 'Jarvis cancelar ação' se mudar de ideia."
+    return "❌ Ação de confirmação desconhecida."
+
+
+def confirmacao_pendente():
+    """Tem uma confirmação de desligar/reiniciar esperando resposta?"""
+    return AGUARDANDO_CONFIRMACAO["ativo"]
+
+
+def resolver_confirmacao(texto):
+    """Interpreta a próxima frase falada.
+
+    Devolve a mensagem final se a frase resolveu a pendência (executou
+    ou cancelou), ou None se não tinha nada pendente / a frase não
+    serviu — nesse caso quem chama deve continuar como estava.
+    """
+    if not AGUARDANDO_CONFIRMACAO["ativo"]:
+        return None
+
+    texto_lower = texto.lower()
+    if any(p in texto_lower for p in ["sim", "confirma", "confirmo", "pode"]):
+        timer = AGUARDANDO_CONFIRMACAO.get("timer")
+        if timer:
+            timer.cancel()
+        acao = AGUARDANDO_CONFIRMACAO["acao"]
+        AGUARDANDO_CONFIRMACAO["ativo"] = False
+        AGUARDANDO_CONFIRMACAO["acao"] = None
+        return _executar_acao_confirmada(acao)
+    if any(p in texto_lower for p in ["não", "nao", "cancela"]):
+        timer = AGUARDANDO_CONFIRMACAO.get("timer")
+        if timer:
+            timer.cancel()
+        AGUARDANDO_CONFIRMACAO["ativo"] = False
+        AGUARDANDO_CONFIRMACAO["acao"] = None
+        return "✅ Ação cancelada."
+    return None
+
+
+# ============================================================
+# FERRAMENTAS — APPS E NAVEGADORES
+# ============================================================
+@ferramenta(
+    "Abre um programa instalado no computador pelo nome",
+    {"type": "object", "properties": {
+        "nome": {"type": "string"},
+        "argumentos": {"type": "string", "description": "opcional"},
+    }, "required": ["nome"]},
+)
+def abrir_app(nome, argumentos=""):
+    encontrado = encontrar_app(nome)
+    if not encontrado:
+        return f"❌ Não achei o app '{nome}' instalado."
+    caminho = APPS[encontrado]
+    try:
+        if argumentos:
+            subprocess.Popen(f'"{caminho}" {argumentos}')
+        else:
+            subprocess.Popen(caminho)
+        return f"✅ Abrindo {encontrado} {argumentos}".strip()
+    except Exception as e:
+        return f"❌ Erro ao abrir {encontrado}: {e}"
+
+
+@ferramenta(
+    "Fecha TODAS as janelas de um programa aberto, pelo nome",
+    {"type": "object", "properties": {
+        "nome": {"type": "string"},
+    }, "required": ["nome"]},
+)
+def fechar_app(nome):
+    encontrado = encontrar_app(nome)
+    if not encontrado:
+        return f"❌ Não achei o app '{nome}'."
+
+    exe_name = os.path.basename(APPS[encontrado]).lower()
+    candidatos = set(OVERRIDES_PROCESSO.get(encontrado, []))
+    candidatos.add(exe_name)
+
+    # PIDs dos processos "de lógica" do app
+    pids_alvo = [
+        proc.info['pid'] for proc in psutil.process_iter(['pid', 'name'])
+        if (proc.info['name'] or "").lower() in candidatos
+    ]
+
+    # Apps UWP (Calculadora, Configurações, Alarmes, etc.) costumam ter a
+    # JANELA hospedada pelo ApplicationFrameHost.exe, mesmo com a lógica
+    # rodando em outro processo (ex: CalculatorApp.exe)
+    pids_host = obter_pids_processo("ApplicationFrameHost.exe")
+
+    palavra_chave = encontrado.split()[0]
+    janelas_fechadas = 0
+
+    if pids_alvo or pids_host:
+        for hwnd in obter_janelas_visiveis(pids_alvo + pids_host):
+            titulo = win32gui.GetWindowText(hwnd).lower()
+            if palavra_chave in titulo or any(c.replace(".exe", "") in titulo for c in candidatos):
+                win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+                janelas_fechadas += 1
+
+    if janelas_fechadas:
+        time.sleep(0.6)  # dá tempo do app processar o WM_CLOSE
+
+    # Fallback: mata o processo de lógica diretamente, se ainda existir
+    fechados = []
+    erros = []
+    for pid in pids_alvo:
+        try:
+            p = psutil.Process(pid)
+            if p.is_running():
+                p.terminate()
+                fechados.append(p.name())
+        except psutil.NoSuchProcess:
+            pass  # já tinha fechado pelo WM_CLOSE, ótimo
+        except Exception as e:
+            erros.append(str(e))
+
+    if janelas_fechadas or fechados:
+        return f"✅ Fechando {encontrado}"
+
+    if erros:
+        emitir("log", quem="sistema", texto=f"⚠️ Erros ao fechar {encontrado}: {'; '.join(erros)}")
+
+    # Fallback antigo: qualquer processo cujo nome contenha a palavra-chave
+    if len(palavra_chave) >= 3:
+        for proc in psutil.process_iter(['pid', 'name']):
+            nome_proc = (proc.info['name'] or "").lower()
+            if palavra_chave in nome_proc:
+                try:
+                    psutil.Process(proc.info['pid']).terminate()
+                    fechados.append(nome_proc)
+                except Exception as e:
+                    erros.append(str(e))
+
+    if fechados:
+        return f"✅ Fechando {encontrado}"
+
+    return f"❌ {encontrado} não parece estar aberto no momento."
+
+
+@ferramenta(
+    "Abre um navegador (chrome, brave, firefox, edge) em modo normal, privado ou tor (tor só no brave)",
+    {"type": "object", "properties": {
+        "navegador": {"type": "string", "enum": ["chrome", "brave", "firefox", "edge"]},
+        "modo": {"type": "string", "enum": ["normal", "privado", "tor"]},
+        "url": {"type": "string"},
+        "pesquisa": {"type": "string"},
+    }, "required": ["navegador"]},
+)
+def abrir_navegador(navegador="chrome", modo="normal", url="", pesquisa=""):
+    navegador = navegador.lower()
+    caminho = NAVEGADORES.get(navegador)
+    if not caminho or not os.path.exists(caminho):
+        return f"❌ Não achei o navegador '{navegador}' instalado no caminho esperado."
+
+    if modo == "tor":
+        if navegador != "brave":
+            return "❌ Modo Tor só está disponível pro Brave."
+        try:
+            pids_brave = obter_pids_processo("brave.exe")
+            janelas_antes = set(obter_janelas_visiveis(pids_brave))
+
+            subprocess.Popen(caminho)
+            time.sleep(2.5)
+            pyautogui.hotkey('shift', 'alt', 'n')
+            time.sleep(6)
+
+            pids_brave = obter_pids_processo("brave.exe")
+            janelas_depois = set(obter_janelas_visiveis(pids_brave))
+            novas = janelas_depois - janelas_antes
+            if novas:
+                JANELAS_RASTREADAS["brave_tor"] = list(novas)[0]
+
+            if pesquisa:
+                url = f"https://duckduckgo.com/?q={pesquisa.replace(' ', '+')}"
+            if url:
+                pyautogui.hotkey('ctrl', 'l')
+                time.sleep(0.5)
+                pyautogui.typewrite(url, interval=0.02)
+                pyautogui.press('enter')
+
+            return f"✅ Abrindo Brave em janela Tor{(' pesquisando: ' + pesquisa) if pesquisa else ''}"
+        except Exception as e:
+            return f"❌ Erro ao abrir Brave em modo Tor: {e}"
+
+    args = []
+    if modo == "privado":
+        flags = {
+            "chrome": "--incognito", "brave": "--incognito",
+            "edge": "--inprivate", "firefox": "-private-window",
+        }
+        args.append(flags.get(navegador, ""))
+
+    if pesquisa:
+        url = f"https://www.google.com/search?q={pesquisa.replace(' ', '+')}"
+    if url:
+        args.append(f'"{url}"')
+
+    try:
+        comando = f'"{caminho}" ' + " ".join(a for a in args if a)
+        subprocess.Popen(comando)
+        return f"✅ Abrindo {navegador} ({modo}){(' pesquisando: ' + pesquisa) if pesquisa else ''}"
+    except Exception as e:
+        return f"❌ Erro ao abrir {navegador}: {e}"
+
+
+@ferramenta("Fecha especificamente a janela Tor do Brave, sem fechar outras janelas do Brave")
+def fechar_janela_tor():
+    hwnd = JANELAS_RASTREADAS.get("brave_tor")
+    if not hwnd or not win32gui.IsWindow(hwnd):
+        return "❌ Não tem nenhuma janela Tor rastreada aberta no momento."
+    win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+    del JANELAS_RASTREADAS["brave_tor"]
+    return "✅ Fechando apenas a janela Tor do Brave."
+
+
+@ferramenta(
+    "Pesquisa um termo no Google no navegador padrão",
+    {"type": "object", "properties": {"termo": {"type": "string"}}, "required": ["termo"]},
+)
+def pesquisar_google(termo):
+    url = f"https://www.google.com/search?q={termo.replace(' ', '+')}"
+    webbrowser.open(url)
+    return f"🔎 Pesquisando no Google: {termo}"
+
+
+@ferramenta(
+    "Abre uma URL específica no navegador padrão",
+    {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
+)
+def abrir_url(url):
+    webbrowser.open(url)
+    return f"✅ Abrindo {url}"
+
+
+# ============================================================
+# FERRAMENTAS — SISTEMA
+# ============================================================
+@ferramenta("Tira um print/screenshot da tela e salva")
+def tirar_print():
+    pasta = os.path.join(os.path.expanduser("~"), "Pictures", "Jarvis_Prints")
+    os.makedirs(pasta, exist_ok=True)
+    nome_arquivo = f"print_{time.strftime('%Y%m%d_%H%M%S')}.png"
+    caminho = os.path.join(pasta, nome_arquivo)
+    pyautogui.screenshot(caminho)
+    return f"📸 Print salvo em: {caminho}"
+
+
+@ferramenta(
+    "Ajusta o volume do sistema, de 0 a 100",
+    {"type": "object", "properties": {
+        "nivel": {"type": "integer"},
+    }, "required": ["nivel"]},
+)
+def ajustar_volume(nivel):
+    try:
+        nivel = max(0, min(100, int(nivel)))
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        volume = cast(interface, POINTER(IAudioEndpointVolume))
+        volume.SetMasterVolumeLevelScalar(nivel / 100, None)
+        return f"🔊 Volume ajustado para {nivel}%"
+    except Exception as e:
+        return f"❌ Erro ao ajustar volume: {e}"
+
+
+@ferramenta("Bloqueia a tela do computador imediatamente")
+def bloquear_pc():
+    ctypes.windll.user32.LockWorkStation()
+    return "🔒 PC bloqueado."
+
+
+@ferramenta(
+    "Pede pra desligar o computador. NÃO desliga na hora — o sistema já pede "
+    "confirmação por voz sozinho (o usuário só precisa dizer 'sim' depois)."
+)
+def desligar_pc():
+    return _pedir_confirmacao(
+        "desligar",
+        "⚠️ Quer mesmo desligar o PC? Diga 'sim' nos próximos segundos pra confirmar."
+    )
+
+
+@ferramenta(
+    "Pede pra reiniciar o computador. NÃO reinicia na hora — o sistema já pede "
+    "confirmação por voz sozinho (o usuário só precisa dizer 'sim' depois)."
+)
+def reiniciar_pc():
+    return _pedir_confirmacao(
+        "reiniciar",
+        "⚠️ Quer mesmo reiniciar o PC? Diga 'sim' nos próximos segundos pra confirmar."
+    )
+
+
+@ferramenta("Cancela um desligamento ou reinício agendado")
+def cancelar_acao():
+    subprocess.run("shutdown /a", shell=True)
+    return "✅ Ação de desligar/reiniciar cancelada."
+
+
+# ============================================================
+# FERRAMENTAS — MÍDIA
+# ============================================================
+def _tecla_midia(vk_code):
+    win32api.keybd_event(vk_code, 0, 0, 0)
+    win32api.keybd_event(vk_code, 0, win32con.KEYEVENTF_KEYUP, 0)
+
+
+@ferramenta("Toca ou pausa a música/mídia em reprodução (tecla de mídia play/pause)")
+def media_play_pause():
+    _tecla_midia(0xB3)
+    return "⏯️ Play/pause."
+
+
+@ferramenta("Pula pra próxima faixa de música/mídia")
+def media_proxima():
+    _tecla_midia(0xB0)
+    return "⏭️ Próxima faixa."
+
+
+@ferramenta("Volta pra faixa anterior de música/mídia")
+def media_anterior():
+    _tecla_midia(0xB1)
+    return "⏮️ Faixa anterior."
+
+
+# ============================================================
+# FERRAMENTAS — JANELA EM FOCO
+# ============================================================
+@ferramenta("Fecha a janela que está em foco/ativa no momento (ex: 'fecha essa janela', 'fecha isso')")
+def fechar_janela_atual():
+    hwnd = win32gui.GetForegroundWindow()
+    if not hwnd:
+        return "❌ Não consegui identificar a janela em foco."
+    titulo = win32gui.GetWindowText(hwnd) or "(sem título)"
+    win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+    return f"✅ Fechando janela em foco: {titulo}"
+
+
+@ferramenta("Minimiza a janela que está em foco/ativa no momento (ex: 'minimiza isso')")
+def minimizar_janela_atual():
+    hwnd = win32gui.GetForegroundWindow()
+    if not hwnd:
+        return "❌ Não consegui identificar a janela em foco."
+    win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+    return "✅ Janela minimizada."
+
+
+# ============================================================
+# FERRAMENTAS — ROTINAS
+# ============================================================
+@ferramenta(
+    "Ativa o 'modo foco': fecha apps de distração, abre apps de trabalho e "
+    "baixa o volume (listas configuráveis no topo deste arquivo)"
+)
+def ativar_modo_foco():
+    resultados = []
+    for nome in MODO_FOCO_FECHAR:
+        resultados.append(fechar_app(nome))
+    for nome in MODO_FOCO_ABRIR:
+        resultados.append(abrir_app(nome))
+    resultados.append(ajustar_volume(MODO_FOCO_VOLUME))
+    return "🎯 Modo foco ativado.\n" + "\n".join(resultados)
+
+
+# o que o jarvis.py importa com "from ferramentas import *"
+__all__ = [
+    # registro
+    "FUNCOES_DISPONIVEIS", "TOOLS", "ferramenta",
+    # apps
+    "APPS", "apps_prontos", "atualizar_apps", "carregar_apps_inicial",
+    "encontrar_app", "escanear_apps",
+    # confirmação
+    "confirmacao_pendente", "resolver_confirmacao",
+    # ferramentas
+    "abrir_app", "fechar_app", "abrir_navegador", "fechar_janela_tor",
+    "pesquisar_google", "abrir_url", "tirar_print", "ajustar_volume",
+    "bloquear_pc", "desligar_pc", "reiniciar_pc", "cancelar_acao",
+    "media_play_pause", "media_proxima", "media_anterior",
+    "fechar_janela_atual", "minimizar_janela_atual", "ativar_modo_foco",
+]
+
+==================== hud_bridge.py ==================== 
+import asyncio
+import json
+import threading
+import websockets
+
+_loop = None
+_clientes = set()
+_lock = threading.Lock()
+_callback_comando = None
+
+
+def registrar_callback_comando(func):
+    """jarvis.py chama isso pra receber comandos vindos do HUD (botões, texto, etc)."""
+    global _callback_comando
+    _callback_comando = func
+
+
+async def _handler(websocket):
+    with _lock:
+        _clientes.add(websocket)
+    try:
+        async for mensagem in websocket:
+            try:
+                dados = json.loads(mensagem)
+            except json.JSONDecodeError:
+                continue
+            if dados.get("tipo") == "comando" and _callback_comando:
+                _callback_comando(dados.get("valor"), dados.get("payload"))
+    finally:
+        with _lock:
+            _clientes.discard(websocket)
+
+
+async def _broadcast_async(mensagem: dict):
+    if not _clientes:
+        return
+    texto = json.dumps(mensagem, ensure_ascii=False)
+    mortos = []
+    for cliente in list(_clientes):
+        try:
+            await cliente.send(texto)
+        except Exception:
+            mortos.append(cliente)
+    for m in mortos:
+        _clientes.discard(m)
+
+
+def enviar(mensagem: dict):
+    """Thread-safe. Pode ser chamado de qualquer thread (voz, IA, etc)."""
+    if _loop is None:
+        return
+    asyncio.run_coroutine_threadsafe(_broadcast_async(mensagem), _loop)
+
+
+async def _main(host, port):
+    global _loop
+    _loop = asyncio.get_running_loop()
+    async with websockets.serve(_handler, host, port):
+        await asyncio.Future()
+
+
+def iniciar_servidor(host="localhost", port=8765):
+    def _run():
+        asyncio.run(_main(host, port))
+    threading.Thread(target=_run, daemon=True).start()
+==================== hud_util.py ==================== 
+"""Saída do Jarvis: log em arquivo + eventos pro HUD.
+
+Este arquivo existe porque é o ÚNICO pedaço compartilhado entre o
+``jarvis.py`` (loop de voz, interface) e o ``ferramentas.py`` (avisar
+erros, progresso do escaneamento de apps). Os dois precisam das mesmas
+funções, então elas moram num lugar só em vez de duplicadas.
+"""
+import os
+import queue
+import time
+
+import hud_bridge
+from log_util import criar_logger
+
+PASTA_JARVIS = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(PASTA_JARVIS, "jarvis_log.txt")
+
+log = criar_logger(LOG_FILE)
+
+# Fila interna de eventos (mantida por compatibilidade)
+EVENTOS = queue.Queue()
+
+
+def texto_status_para_estado_hud(texto_status):
+    if "Ouvindo" in texto_status:
+        return "ouvindo"
+    if "Processando" in texto_status:
+        return "processando"
+    if "Pausado" in texto_status:
+        return "dormindo"
+    return "dormindo"
+
+
+def emitir(tipo, **kwargs):
+    EVENTOS.put((tipo, kwargs))
+
+    if tipo == "status":
+        estado = texto_status_para_estado_hud(kwargs.get("texto", ""))
+        hud_bridge.enviar({"tipo": "estado", "valor": estado})
+    elif tipo == "log":
+        hud_bridge.enviar({
+            "tipo": "log",
+            "quem": kwargs.get("quem", "sistema"),
+            "texto": kwargs.get("texto", "")
+        })
+
+
+def emitir_audio(nivel):
+    """Nível do microfone em tempo real (pulso visual do HUD)."""
+    hud_bridge.enviar({"tipo": "audio", "valor": nivel})
+
+
+def logar_e_emitir(texto, quem="sistema"):
+    """Grava no jarvis_log.txt E mostra no HUD — usado pra eventos que
+    valem a pena persistir em disco (erros, avisos, eventos de sistema)."""
+    log(texto)
+    emitir("log", quem=quem, texto=texto)
+
+
+def iniciar_hud():
+    hud_bridge.iniciar_servidor()
+
+
+def registrar_comandos(callback):
+    hud_bridge.registrar_callback_comando(callback)
+
+==================== jarvis.py ==================== 
+"""
+JARVIS — assistente de computador por voz (Windows).
+
+Este arquivo é o "cérebro": configuração, microfone, reconhecimento de
+fala, IA, comandos diretos, loop de escuta e interface (HUD).
+
+As ferramentas que agem no PC (abrir/fechar apps, navegador, volume,
+mídia, print, desligar...) estão em ferramentas.py.
+A saída de log/HUD está em hud_util.py.
+"""
+import os
+import re
+import json
+import time
+import difflib
+import threading
+import winsound
+import numpy as np
+import pyaudiowpatch as pyaudio
+import speech_recognition as sr
+import webview
+from openai import OpenAI
+
+from hud_util import (
+    PASTA_JARVIS,
+    emitir,
+    emitir_audio,
+    iniciar_hud,
+    log,
+    logar_e_emitir,
+    registrar_comandos,
+)
+from ferramentas import *  # noqa: F401,F403  (traz as tools e o registro)
+
+# Necessário para o SpeechRecognition conseguir usar o PyAudioWPatch
+# em vez do PyAudio tradicional (que não compila em Python 3.14 sem
+# o Visual C++ Build Tools instalado)
+sr.Microphone.get_pyaudio = lambda self: pyaudio
+
+# ============================================================
+# DEPENDÊNCIAS OPCIONAIS
+# Cada uma destas é usada por uma funcionalidade nova, mas nenhuma
+# derruba o programa se não estiver instalada ainda — só desativa
+# aquela funcionalidade específica e avisa no log.
+# ============================================================
+try:
+    import keyboard  # hotkey global Win+J
+    _KEYBOARD_DISPONIVEL = True
+except ImportError:
+    _KEYBOARD_DISPONIVEL = False
+
+try:
+    import pyperclip  # leitura da área de transferência (resumir_clipboard)
+    _PYPERCLIP_DISPONIVEL = True
+except ImportError:
+    _PYPERCLIP_DISPONIVEL = False
+
+try:
+    from faster_whisper import WhisperModel  # STT local (fallback offline)
+    _FASTER_WHISPER_DISPONIVEL = True
+except ImportError:
+    _FASTER_WHISPER_DISPONIVEL = False
+
+# ================================
+# CONFIGURAÇÃO DE MÚLTIPLAS IAs
+# ================================
+# A ordem importa: o primeiro da lista com api_key configurada é
+# tentado primeiro. Groq (LPU dedicada) é MUITO mais rápido que o
+# Nemotron 550B gratuito da OpenRouter, então ele deve ficar sempre em
+# primeiro — a OpenRouter aqui é só rede de segurança se o Groq cair.
+PROVEDORES = [
+    {
+        "nome": "Groq",
+        "api_key": os.getenv("GROQ_API_KEY"),
+        "base_url": "https://api.groq.com/openai/v1",
+        "modelo": "qwen/qwen3.8-27b",
+        "max_tokens": 400,
+        "timeout": 10.0,
+    },
+    {
+        "nome": "OpenRouter",
+        "api_key": os.getenv("OPENROUTER_API_KEY"),
+        "base_url": "https://openrouter.ai/api/v1",
+        "modelo": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "max_tokens": 600,
+        "timeout": 20.0,
+    },
+]
+
+# Configuração de microfone TESTADA E COMPROVADA nesta máquina via
+# PyAudioWPatch. NÃO usar índices do sounddevice — a numeração é
+# diferente entre bibliotecas. NÃO tentar redescobrir automaticamente:
+# WDM-KS (que aparecia como "melhor" candidato em buscas automáticas)
+# não suporta streaming em modo blocking nesta máquina
+# (erro PaErrorCode -9999/-9996).
+MIC_DEVICE_INDEX = 1
+MIC_SAMPLE_RATE = 44100
+MIC_CHUNK_SIZE = 1024
+VAD_SILENCIO_LIMIAR = 500
+VAD_SILENCIO_MAXIMO = 0.7
+VAD_DURACAO_MAXIMA = 15
+
+WAKE_WORD = "jarvis"
+
+# STT local (faster-whisper) usado só quando o Google falha por causa
+# de rede/indisponibilidade. Modelo "small" é o equilíbrio pedido entre
+# leveza e precisão; ajuste aqui se quiser trocar por "base" ou "medium".
+WHISPER_MODELO = "small"
+WHISPER_IDIOMA = "pt"
+
+# Rate limit simples pra não estourar a cota da API em caso de ruído
+# sendo interpretado repetidamente como comando.
+RATE_LIMIT_MAX_CHAMADAS = 15
+RATE_LIMIT_JANELA_SEGUNDOS = 60
+
+# ------------------------------------------------------------
+# ENCERRAR A SESSÃO DO JARVIS ("sair", "desliga aí", "fica offline"...)
+# ------------------------------------------------------------
+# Frases curtas exigem match EXATO do comando inteiro (evita fechar o
+# Jarvis sem querer se você disser algo tipo "será que dá pra sair
+# mais cedo hoje"). Frases longas/específicas podem ser checadas por
+# conterem, já que são raras de aparecer sem intenção.
+FRASES_ENCERRAR_EXATAS = {"sair", "exit", "tchau"}
+FRASES_ENCERRAR_CONTIDAS = [
+    "desliga aí", "desliga essa porra", "desliga logo",
+    "fica offline", "vai offline", "cai fora", "some daqui",
+    "vai dormir", "desativa aí", "encerra sessão", "encerra aí",
+    "finaliza aí", "para de ouvir", "pode ir", "fecha tudo",
+]
+
+
+def deve_encerrar_sessao(texto):
+    texto_norm = texto.lower().strip()
+
+    if texto_norm in FRASES_ENCERRAR_EXATAS:
+        return True
+
+    # Não confundir com os comandos REAIS de desligar/reiniciar o PC
+    # (esses continuam passando pela confirmação de segurança normal)
+    if re.match(r'^desliga(r)?(\s+o\s+(computador|pc))?$', texto_norm):
+        return False
+    if re.match(r'^reinicia(r)?(\s+o\s+(computador|pc))?$', texto_norm):
+        return False
+
+    return any(frase in texto_norm for frase in FRASES_ENCERRAR_CONTIDAS)
+
+
+OUVIR_LIGADO = threading.Event()
+OUVIR_LIGADO.set()
+
+# Setado pelo hotkey Win+J: faz a próxima frase captada ser tratada
+# como comando direto, sem precisar dizer "Jarvis" antes (push-to-talk).
+PROXIMA_SEM_WAKE_WORD = threading.Event()
+
+JANELA_HUD = None
+
+LIMIAR_VAD_ATUAL = VAD_SILENCIO_LIMIAR
+
+APPS = carregar_apps_inicial()
+_APPS_VIERAM_DO_CACHE = apps_prontos()
+
+
+def _beep(freq, duracao_ms):
+    try:
+        winsound.Beep(freq, duracao_ms)
+    except Exception:
+        pass
+
+
+def _beep_ouvindo():
+    _beep(700, 120)
+
+
+def _beep_entendido():
+    _beep(1200, 80)
+
+
+# ============================================================
+# MICROFONE — PyAudioWPatch, dispositivo fixo e testado (índice 1)
+# STREAM PERSISTENTE: aberto uma única vez e reaproveitado em todas as
+# capturas, em vez de recriar o PyAudio a cada frase.
+# ============================================================
+_pa_instance = None
+_pa_stream = None
+
+
+def _abrir_stream_persistente():
+    global _pa_instance, _pa_stream
+    try:
+        _pa_instance = pyaudio.PyAudio()
+        _pa_stream = _pa_instance.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=MIC_SAMPLE_RATE,
+            input=True,
+            input_device_index=MIC_DEVICE_INDEX,
+            frames_per_buffer=MIC_CHUNK_SIZE,
+        )
+        return True
+    except Exception as e:
+        logar_e_emitir(f"❌ Não consegui abrir o microfone (índice {MIC_DEVICE_INDEX}): {e}")
+        _pa_instance = None
+        _pa_stream = None
+        return False
+
+
+def _garantir_stream():
+    if _pa_stream is None:
+        return _abrir_stream_persistente()
+    return True
+
+
+def fechar_stream_microfone():
+    global _pa_instance, _pa_stream
+    try:
+        if _pa_stream:
+            _pa_stream.stop_stream()
+            _pa_stream.close()
+    except Exception:
+        pass
+    try:
+        if _pa_instance:
+            _pa_instance.terminate()
+    except Exception:
+        pass
+    _pa_stream = None
+    _pa_instance = None
+
+
+# ============================================================
+# STT LOCAL (faster-whisper) — fallback offline quando o Google falha
+# ============================================================
+_whisper_model = None
+
+
+def _carregar_whisper_em_background():
+    global _whisper_model
+    if not _FASTER_WHISPER_DISPONIVEL:
+        logar_e_emitir("ℹ️ faster-whisper não instalado — fallback offline de voz desativado.")
+        return
+    try:
+        logar_e_emitir("🧠 Carregando modelo Whisper local em segundo plano...")
+        _whisper_model = WhisperModel(WHISPER_MODELO, device="cpu", compute_type="int8")
+        logar_e_emitir("✅ Whisper local pronto (fallback offline ativo).")
+    except Exception as e:
+        logar_e_emitir(f"⚠️ Não consegui carregar o Whisper local: {e}")
+
+
+def _resample_para_16k(audio_np, taxa_original):
+    if taxa_original == 16000:
+        return audio_np
+    duracao = len(audio_np) / taxa_original
+    n_amostras_novas = max(1, int(duracao * 16000))
+    indices_originais = np.linspace(0, len(audio_np) - 1, num=len(audio_np))
+    indices_novos = np.linspace(0, len(audio_np) - 1, num=n_amostras_novas)
+    return np.interp(indices_novos, indices_originais, audio_np).astype(np.float32)
+
+
+def transcrever_offline(audio_bytes, sample_rate):
+    if _whisper_model is None:
+        return None
+    try:
+        audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        audio_16k = _resample_para_16k(audio_np, sample_rate)
+        segmentos, _info = _whisper_model.transcribe(
+            audio_16k, language=WHISPER_IDIOMA, beam_size=1
+        )
+        texto = " ".join(s.text.strip() for s in segmentos).strip()
+        return texto or None
+    except Exception as e:
+        logar_e_emitir(f"⚠️ Erro no reconhecimento offline (Whisper): {e}")
+        return None
+
+
+# ============================================================
+# VOZ — ENTRADA COM VAD (PyAudioWPatch, stream persistente)
+# ============================================================
+def escutar_comando():
+    if not _garantir_stream():
+        time.sleep(1.0)
+        return None
+
+    recognizer = sr.Recognizer()
+    block_duration = MIC_CHUNK_SIZE / MIC_SAMPLE_RATE
+
+    frames_gravados = []
+    silencio_acumulado = 0.0
+    tempo_total = 0.0
+    comecou_a_falar = False
+
+    while True:
+        try:
+            dados = _pa_stream.read(MIC_CHUNK_SIZE, exception_on_overflow=False)
+        except Exception as e:
+            logar_e_emitir(f"❌ Erro no microfone, reabrindo: {e}")
+            fechar_stream_microfone()
+            emitir_audio(0.0)
+            return None
+
+        bloco = np.frombuffer(dados, dtype=np.int16)
+        rms = float(np.sqrt(np.mean(bloco.astype(np.float32) ** 2)))
+        tempo_total += block_duration
+
+        # Envia o nível de áudio em tempo real pro HUD (pulso visual)
+        nivel_normalizado = min(1.0, rms / 4000.0)
+        emitir_audio(nivel_normalizado)
+
+        if rms > LIMIAR_VAD_ATUAL:
+            comecou_a_falar = True
+            silencio_acumulado = 0.0
+            frames_gravados.append(dados)
+        else:
+            silencio_acumulado += block_duration
+            if comecou_a_falar:
+                frames_gravados.append(dados)
+            if silencio_acumulado >= VAD_SILENCIO_MAXIMO:
+                break
+
+        if tempo_total >= VAD_DURACAO_MAXIMA:
+            break
+
+    emitir_audio(0.0)
+
+    if not frames_gravados:
+        return None
+
+    audio_bytes = b"".join(frames_gravados)
+
+    try:
+        audio = sr.AudioData(audio_bytes, MIC_SAMPLE_RATE, 2)
+        return recognizer.recognize_google(audio, language="pt-BR")
+    except sr.UnknownValueError:
+        return None
+    except sr.RequestError as e:
+        logar_e_emitir(f"⚠️ Google indisponível ({e}), tentando reconhecimento local...")
+        texto_offline = transcrever_offline(audio_bytes, MIC_SAMPLE_RATE)
+        if texto_offline:
+            emitir("log", quem="sistema", texto=f'🗣️ (offline) "{texto_offline}"')
+        return texto_offline
+
+
+def detectar_wake_word(texto):
+    if not texto:
+        return None
+    palavras = texto.strip().split()
+    if not palavras:
+        return None
+    primeira_palavra = palavras[0].lower().strip(",.!?;:")
+    parecido = difflib.get_close_matches(primeira_palavra, [WAKE_WORD], n=1, cutoff=0.6)
+    if parecido:
+        return " ".join(palavras[1:]).strip()
+    return None
+
+
+# ============================================================
+# RATE LIMIT DAS CHAMADAS DE IA
+# ============================================================
+_chamadas_ia_timestamps = []
+
+
+def _limite_de_chamadas_excedido():
+    agora = time.time()
+    _chamadas_ia_timestamps[:] = [t for t in _chamadas_ia_timestamps if agora - t < RATE_LIMIT_JANELA_SEGUNDOS]
+    if len(_chamadas_ia_timestamps) >= RATE_LIMIT_MAX_CHAMADAS:
+        return True
+    _chamadas_ia_timestamps.append(agora)
+    return False
+
+
+# ============================================================
+# COMANDOS DIRETOS (regex/palavra-chave) — bypassa a IA inteira pra
+# comandos comuns, zerando a latência pra eles. Também serve de
+# fallback quando os dois provedores de IA estão fora do ar, desde que
+# a frase bata com um padrão conhecido.
+# Padrões mais específicos vêm primeiro; "abre X"/"fecha X" genéricos
+# ficam por último, como catch-all.
+# ============================================================
+PADROES_DIRETOS = []
+
+
+def _registrar_padrao(regex, handler):
+    PADROES_DIRETOS.append((re.compile(regex, re.IGNORECASE), handler))
+
+
+_registrar_padrao(r'^fecha (?:essa|esta|a) janela$', lambda m: fechar_janela_atual())
+_registrar_padrao(r'^fecha isso$', lambda m: fechar_janela_atual())
+_registrar_padrao(r'^minimiza(?: essa| esta)?(?: janela)?$', lambda m: minimizar_janela_atual())
+_registrar_padrao(r'^minimiza isso$', lambda m: minimizar_janela_atual())
+_registrar_padrao(r'^(?:tira|bate) (?:um )?print(?:e)?$', lambda m: tirar_print())
+_registrar_padrao(r'^(?:ajusta|coloca|bota) o volume (?:pra|para|em) (\d+)%?$', lambda m: ajustar_volume(int(m.group(1))))
+_registrar_padrao(r'^volume (?:pra |para |em )?(\d+)%?$', lambda m: ajustar_volume(int(m.group(1))))
+_registrar_padrao(r'^bloqueia(?: o pc| a tela)?$', lambda m: bloquear_pc())
+_registrar_padrao(r'^tranca(?: o pc| a tela)?$', lambda m: bloquear_pc())
+_registrar_padrao(r'^pesquisa (.+) no google$', lambda m: pesquisar_google(m.group(1).strip()))
+_registrar_padrao(r'^(?:pausa|toca|play)(?: a m[uú]sica)?$', lambda m: media_play_pause())
+_registrar_padrao(r'^pr[oó]xima(?: m[uú]sica| faixa)?$', lambda m: media_proxima())
+_registrar_padrao(r'^m[uú]sica anterior$', lambda m: media_anterior())
+_registrar_padrao(r'^(?:ativa|liga)(?: o)? modo foco$', lambda m: ativar_modo_foco())
+_registrar_padrao(r'^resum[ei] (?:isso|o que copiei|a [aá]rea de transfer[eê]ncia)$', lambda m: resumir_clipboard())
+_registrar_padrao(r'^cancela(?: a)? a[cç][aã]o$', lambda m: cancelar_acao())
+_registrar_padrao(r'^desliga(?: o computador| o pc)?$', lambda m: desligar_pc())
+_registrar_padrao(r'^reinicia(?: o computador| o pc)?$', lambda m: reiniciar_pc())
+_registrar_padrao(r'^abr[ei] (?:o |a )?(.+)$', lambda m: abrir_app(m.group(1).strip()))
+_registrar_padrao(r'^fech[ae] (?:o |a )?(.+)$', lambda m: fechar_app(m.group(1).strip()))
+
+
+def tentar_comando_direto(texto):
+    texto_normalizado = texto.strip().lower()
+    for padrao, handler in PADROES_DIRETOS:
+        m = padrao.match(texto_normalizado)
+        if m:
+            try:
+                resultado = handler(m)
+            except Exception as e:
+                logar_e_emitir(f"⚠️ Erro no comando direto: {e}")
+                return None
+            # Se o comando direto "achou" que era um app mas não achou
+            # nada (❌), deixa a IA tentar interpretar melhor em vez de
+            # já devolver erro — evita falsos positivos tipo "abre a boca".
+            if resultado and resultado.strip().startswith("❌"):
+                return None
+            return resultado
+    return None
+
+
+SYSTEM_PROMPT = """Você é o Jarvis: um assistente de computador leal, extremamente competente,
+com o senso de humor seco e o sarcasmo elegante de um mordomo digital que já viu de tudo.
+Trate o usuário sempre como "senhor". Pode soltar um comentário irônico ou debochado
+ocasional, mas SEM nunca comprometer a clareza da resposta ou a execução do comando certo.
+
+Use as ferramentas disponíveis sempre que o comando implicar ação real.
+IMPORTANTE: fechar_app fecha TODAS as janelas de um programa (limitação do Windows). Se o
+usuário pedir para fechar especificamente a janela Tor do Brave, use fechar_janela_tor em
+vez de fechar_app. Se ele disser apenas "fecha o brave" sem especificar, use fechar_app.
+Se ele disser "fecha essa janela" ou "fecha isso" sem nomear o programa, use fechar_janela_atual.
+desligar_pc e reiniciar_pc já pedem confirmação por voz sozinhos — só chame a ferramenta
+normalmente, não invente uma pergunta de confirmação extra no seu texto.
+
+Responda SEMPRE em português do Brasil, em NO MÁXIMO 1-2 frases curtas — a personalidade
+aparece no TOM da resposta, nunca no tamanho dela. Nada de textão, listas ou emojis em excesso.
+Se for só uma pergunta de conhecimento geral, responda em texto, sem ferramenta, mantendo
+o mesmo tom sarcástico e a mesma brevidade."""
+
+
+# ============================================================
+# MEMÓRIA DE CONVERSA (persistente entre sessões)
+# ============================================================
+HISTORICO_FILE = os.path.join(PASTA_JARVIS, "historico_conversa.json")
+MAX_HISTORICO = 20
+
+
+def carregar_historico():
+    if os.path.exists(HISTORICO_FILE):
+        try:
+            with open(HISTORICO_FILE, "r", encoding="utf-8") as f:
+                dados = json.load(f)
+            if isinstance(dados, list) and dados and dados[0].get("role") == "system":
+                dados[0]["content"] = SYSTEM_PROMPT  # mantém o prompt sempre atualizado
+                return dados
+        except Exception:
+            pass
+    return [{"role": "system", "content": SYSTEM_PROMPT}]
+
+
+def salvar_historico():
+    try:
+        with open(HISTORICO_FILE, "w", encoding="utf-8") as f:
+            json.dump(HISTORICO, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+HISTORICO = carregar_historico()
+
+
+# ============================================================
+# PROCESSAR COMANDO COM IA
+# ============================================================
+def processar_comando_ia(comando_usuario):
+    global HISTORICO
+
+    if _limite_de_chamadas_excedido():
+        return "⏳ Muitos comandos em pouco tempo, espera um pouco antes do próximo."
+
+    HISTORICO.append({"role": "user", "content": comando_usuario})
+    if len(HISTORICO) > MAX_HISTORICO + 1:
+        HISTORICO[:] = [HISTORICO[0]] + HISTORICO[-MAX_HISTORICO:]
+
+    ultimo_erro = None
+
+    for provedor in PROVEDORES:
+        if not provedor["api_key"]:
+            continue
+        try:
+            client = OpenAI(
+                api_key=provedor["api_key"],
+                base_url=provedor["base_url"],
+                timeout=provedor.get("timeout", 15.0),
+            )
+            resposta = client.chat.completions.create(
+                model=provedor["modelo"],
+                messages=HISTORICO,
+                tools=TOOLS,
+                max_tokens=provedor.get("max_tokens", 500),
+            )
+            msg = resposta.choices[0].message
+
+            if msg.tool_calls:
+                textos_resultado = []
+                for chamada in msg.tool_calls:
+                    nome_funcao = chamada.function.name
+                    try:
+                        argumentos = json.loads(chamada.function.arguments)
+                    except json.JSONDecodeError:
+                        argumentos = {}
+                    funcao = FUNCOES_DISPONIVEIS.get(nome_funcao)
+                    resultado = funcao(**argumentos) if funcao else f"❌ Ferramenta desconhecida: {nome_funcao}"
+                    textos_resultado.append(resultado)
+                resposta_final = "\n".join(textos_resultado)
+            else:
+                resposta_final = msg.content
+
+            HISTORICO.append({"role": "assistant", "content": resposta_final})
+            salvar_historico()
+            return resposta_final
+
+        except Exception as e:
+            ultimo_erro = e
+            logar_e_emitir(f"⚠️ Provedor {provedor['nome']} falhou: {e}")
+            continue
+
+    if HISTORICO and HISTORICO[-1]["role"] == "user":
+        HISTORICO.pop()
+    return f"❌ Todos os provedores de IA falharam. ({ultimo_erro})"
+
+
+def processar_e_responder(comando):
+    emitir("status", texto="🧠 Processando...")
+
+    resultado_direto = tentar_comando_direto(comando)
+    resultado = resultado_direto if resultado_direto is not None else processar_comando_ia(comando)
+
+    emitir("log", quem="jarvis", texto=resultado)
+    emitir("status", texto="🎙️ Ouvindo..." if OUVIR_LIGADO.is_set() else "⏸️ Pausado")
+
+
+# ============================================================
+# FERRAMENTA DE CONTEXTO — resumir o que está copiado
+# (esta tool fica aqui, e não no ferramentas.py, porque é a única que
+# precisa dos PROVEDORES de IA — que moram neste arquivo. Mover ela pra
+# lá criaria import circular.)
+# ============================================================
+@ferramenta("Resume o texto atualmente copiado (Ctrl+C) na área de transferência")
+def resumir_clipboard():
+    if not _PYPERCLIP_DISPONIVEL:
+        return "❌ Pacote 'pyperclip' não instalado — não consigo ler a área de transferência."
+
+    try:
+        conteudo = pyperclip.paste()
+    except Exception as e:
+        return f"❌ Não consegui ler a área de transferência: {e}"
+
+    if not conteudo or len(conteudo.strip()) < 20:
+        return "❌ Não tem texto suficiente copiado pra resumir."
+
+    conteudo = conteudo.strip()[:6000]  # limite de segurança
+
+    for provedor in PROVEDORES:
+        if not provedor["api_key"]:
+            continue
+        try:
+            client = OpenAI(
+                api_key=provedor["api_key"],
+                base_url=provedor["base_url"],
+                timeout=provedor.get("timeout", 15.0),
+            )
+            resposta = client.chat.completions.create(
+                model=provedor["modelo"],
+                messages=[
+                    {"role": "system", "content": "Resuma o texto do usuário em português do Brasil, em poucas frases, direto ao ponto."},
+                    {"role": "user", "content": conteudo},
+                ],
+                max_tokens=300,
+            )
+            return "📋 " + resposta.choices[0].message.content.strip()
+        except Exception:
+            continue
+
+    return "❌ Não consegui resumir agora (IA indisponível)."
+
+
+# ============================================================
+# COMANDOS VINDOS DO HUD (botões, input de texto, sair)
+# ============================================================
+def _sanitizar_texto_hud(texto, limite=500):
+    if not texto:
+        return ""
+    texto = texto.replace("\x00", "")
+    texto = "".join(c for c in texto if c.isprintable() or c in "\n\t")
+    return texto.strip()[:limite]
+
+
+def tratar_comando_hud(valor, payload):
+    global APPS, JANELA_HUD
+
+    if valor == "toggle_mic":
+        if OUVIR_LIGADO.is_set():
+            OUVIR_LIGADO.clear()
+            emitir("status", texto="⏸️ Pausado")
+        else:
+            OUVIR_LIGADO.set()
+            emitir("status", texto="🎙️ Ouvindo...")
+
+    elif valor == "toggle_voz":
+        # Voz por TTS foi removida (era fonte de atraso a cada resposta).
+        # Mantido só pra não quebrar o botão no HUD, caso ele exista.
+        emitir("log", quem="sistema", texto="ℹ️ Resposta por voz foi desativada nesta versão (reduz latência).")
+
+    elif valor == "atualizar_apps":
+        threading.Thread(target=atualizar_apps, daemon=True).start()
+
+    elif valor == "comando_texto":
+        texto = _sanitizar_texto_hud(payload)
+        if texto:
+            emitir("log", quem="voce", texto=texto)
+            if deve_encerrar_sessao(texto):
+                emitir("log", quem="sistema", texto="Encerrando o Jarvis...")
+                if JANELA_HUD:
+                    JANELA_HUD.destroy()
+                return
+            threading.Thread(target=processar_e_responder, args=(texto,), daemon=True).start()
+
+    elif valor == "sair":
+        emitir("log", quem="sistema", texto="Encerrando o Jarvis (via HUD)...")
+        if JANELA_HUD:
+            JANELA_HUD.destroy()
+
+
+registrar_comandos(tratar_comando_hud)
+
+
+# ============================================================
+# LOOP DE ESCUTA (roda em thread separada)
+# ============================================================
+def loop_voz():
+    emitir("status", texto="🎙️ Ouvindo...")
+    while True:
+        if not OUVIR_LIGADO.is_set():
+            time.sleep(0.3)
+            continue
+
+        via_hotkey = PROXIMA_SEM_WAKE_WORD.is_set()
+        if via_hotkey:
+            emitir("status", texto="🎙️ Ouvindo (Win+J)...")
+            _beep_ouvindo()
+
+        texto = escutar_comando()
+
+        if via_hotkey:
+            PROXIMA_SEM_WAKE_WORD.clear()
+            emitir("status", texto="🎙️ Ouvindo..." if OUVIR_LIGADO.is_set() else "⏸️ Pausado")
+
+        if not texto:
+            continue
+
+        # Se tem uma confirmação pendente (desligar/reiniciar), a próxima
+        # frase reconhecida é checada aqui, ANTES de exigir wake word.
+        if confirmacao_pendente():
+            resultado = resolver_confirmacao(texto)
+            if resultado:
+                logar_e_emitir(resultado, quem="jarvis")
+            # qualquer outra coisa: ignora e continua aguardando confirmação
+            continue
+
+        if via_hotkey:
+            comando_extraido = texto.strip()
+            if comando_extraido:
+                emitir("log", quem="voce", texto=f"(Win+J) {comando_extraido}")
+        else:
+            comando_extraido = detectar_wake_word(texto)
+            if comando_extraido is None:
+                emitir("log", quem="sistema", texto=f'(ignorado: "{texto}")')
+                continue
+            emitir("log", quem="voce", texto=f"Jarvis, {comando_extraido}")
+            _beep_entendido()
+
+        if not comando_extraido.strip():
+            emitir("log", quem="jarvis", texto="Diga um comando depois de Jarvis.")
+            continue
+
+        if deve_encerrar_sessao(comando_extraido):
+            emitir("log", quem="sistema", texto="Encerrando o Jarvis...")
+            if JANELA_HUD:
+                JANELA_HUD.destroy()
+            return
+
+        processar_e_responder(comando_extraido)
+
+
+# ============================================================
+# HOTKEY GLOBAL (Win+J) — push-to-talk sem precisar dizer "Jarvis"
+# ============================================================
+def _registrar_hotkey():
+    if not _KEYBOARD_DISPONIVEL:
+        logar_e_emitir("ℹ️ Pacote 'keyboard' não instalado — hotkey Win+J desativado (só ativação por voz).")
+        return
+    try:
+        keyboard.add_hotkey('ctrl+alt+j', lambda: PROXIMA_SEM_WAKE_WORD.set())
+        logar_e_emitir("⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').")
+    except Exception as e:
+        logar_e_emitir(f"⚠️ Não consegui registrar o hotkey Win+J (tente rodar como administrador): {e}")
+
+
+# ============================================================
+# INTERFACE (HUD via pywebview)
+# ============================================================
+def iniciar_interface():
+    global JANELA_HUD
+
+    logar_e_emitir("🚀 Jarvis iniciando...")
+
+    iniciar_hud()
+
+    # Carregamentos pesados rodam em background pra não travar o
+    # startup do HUD: escaneamento de apps (só se não tiver cache) e o
+    # modelo Whisper local (fallback offline de voz).
+    if not _APPS_VIERAM_DO_CACHE:
+        emitir("log", quem="sistema",
+               texto="🔍 Primeira execução: escaneando programas em segundo plano "
+                     "(abrir apps pode falhar até terminar)...")
+        threading.Thread(target=atualizar_apps, daemon=True).start()
+
+    threading.Thread(target=_carregar_whisper_em_background, daemon=True).start()
+
+    _registrar_hotkey()
+
+    threading.Thread(target=loop_voz, daemon=True).start()
+
+    caminho_html = os.path.join(PASTA_JARVIS, "jarvis.html")
+    JANELA_HUD = webview.create_window(
+        "JARVIS",
+        caminho_html,
+        fullscreen=True,
+        frameless=True,
+        easy_drag=False,
+        background_color="#000000",
+    )
+    webview.start()  # bloqueia aqui até a janela fechar
+
+    # Libera o microfone assim que a janela fecha, pra que o listener
+    # consiga reabrir o mesmo dispositivo sem demora nem conflito.
+    fechar_stream_microfone()
+    logar_e_emitir("👋 Jarvis encerrado.")
+
+
+if __name__ == "__main__":
+    iniciar_interface()
+
+==================== jarvis_listener.py ==================== 
+import os
+import time
+import difflib
+import threading
+import subprocess
+import winsound
+import numpy as np
+import pyaudiowpatch as pyaudio
+import speech_recognition as sr
+from PIL import Image, ImageDraw
+import pystray
+import sys
+
+from log_util import criar_logger
+
+# Necessário para o SpeechRecognition conseguir usar o PyAudioWPatch
+# em vez do PyAudio tradicional (que não compila em Python 3.14 sem
+# o Visual C++ Build Tools instalado)
+sr.Microphone.get_pyaudio = lambda self: pyaudio
+
+# Hotkey global (Win+J) é opcional — se o pacote "keyboard" não estiver
+# instalado, o listener continua funcionando normalmente só por voz.
+try:
+    import keyboard
+    _KEYBOARD_DISPONIVEL = True
+except ImportError:
+    _KEYBOARD_DISPONIVEL = False
+
+# ================================
+# CONFIGURAÇÃO
+# ================================
+PASTA_JARVIS = os.path.dirname(os.path.abspath(__file__))
+PYTHON_EXE = "py"
+
+ARQUIVO_SINAL_SAIR = os.path.join(PASTA_JARVIS, ".encerrar_definitivo")
+
+# Configuração de microfone TESTADA E COMPROVADA nesta máquina via
+# PyAudioWPatch. NÃO usar índices do sounddevice aqui — a numeração
+# é diferente entre bibliotecas. NÃO tentar redescobrir automaticamente:
+# WDM-KS (que aparecia como "melhor" candidato em buscas automáticas)
+# não suporta streaming em modo blocking nesta máquina
+# (erro PaErrorCode -9999/-9996).
+MIC_DEVICE_INDEX = 1
+MIC_SAMPLE_RATE = 44100
+MIC_CHUNK_SIZE = 1024
+LANGUAGE = "pt-BR"
+
+VAD_SILENCIO_LIMIAR = 500
+VAD_SILENCIO_MAXIMO = 0.7
+VAD_DURACAO_MAXIMA = 10
+
+WAKE_WORD = "jarvis"
+FRASES_ACORDAR = [
+    "acorda", "acordar", "desperta", "bom dia",
+    "e aí", "eae", "eaew", "bora trampar", "bora trabalhar",
+    "vamo trabalhar", "partiu", "vambora", "ativa", "acessa",
+    "liga aí", "na área", "acorda logo", "levanta",
+    "desperta aí", "chegou a hora",
+]
+
+# Apelidos que dispensam dizer "jarvis" — combinados com uma das
+# FRASES_ACORDAR acima, ainda acordam o listener. Lista bem pessoal,
+# edite à vontade conforme o que você realmente costuma falar.
+APELIDOS_CARINHOSOS = [
+    "merdinha", "bostinha", "seu inútil",
+    "seu preguiçoso", "seu zé ruela", "parceiro", "companheiro",
+]
+
+
+def contem_apelido_carinhoso(texto):
+    texto_lower = texto.lower()
+    return any(apelido in texto_lower for apelido in APELIDOS_CARINHOSOS)
+
+LOG_FILE = os.path.join(PASTA_JARVIS, "listener_log.txt")
+log = criar_logger(LOG_FILE)
+
+processo_jarvis = None
+status_atual = "😴 Dormindo (diga 'Jarvis, acorda' ou Win+J)"
+
+LIMIAR_VAD_ATUAL = VAD_SILENCIO_LIMIAR
+
+# Evita que voz + hotkey acordem o Jarvis ao mesmo tempo por acidente
+_LOCK_ACORDAR = threading.Lock()
+
+
+def _beep_acordando():
+    try:
+        winsound.Beep(660, 150)
+    except Exception:
+        pass
+
+
+# ============================================================
+# MICROFONE — PyAudioWPatch, dispositivo fixo e testado (índice 1)
+# STREAM PERSISTENTE: fica aberto entre uma frase e outra (evita o
+# overhead de recriar o PyAudio a cada captura). É explicitamente
+# FECHADO antes de abrir o Jarvis principal (pra não disputar o mesmo
+# dispositivo de áudio com ele) e reaberto com retry/backoff depois
+# que o Jarvis é encerrado.
+# ============================================================
+_pa_instance = None
+_pa_stream = None
+
+
+def _abrir_stream_persistente():
+    global _pa_instance, _pa_stream
+    try:
+        _pa_instance = pyaudio.PyAudio()
+        _pa_stream = _pa_instance.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=MIC_SAMPLE_RATE,
+            input=True,
+            input_device_index=MIC_DEVICE_INDEX,
+            frames_per_buffer=MIC_CHUNK_SIZE,
+        )
+        info = _pa_instance.get_device_info_by_index(MIC_DEVICE_INDEX)
+        log(f"🎙️ Microfone aberto: {info['name']} (índice {MIC_DEVICE_INDEX})")
+        return True
+    except Exception as e:
+        log(f"❌ Não consegui abrir o microfone (índice {MIC_DEVICE_INDEX}): {e}")
+        _pa_instance = None
+        _pa_stream = None
+        return False
+
+
+def _garantir_stream():
+    if _pa_stream is None:
+        return _abrir_stream_persistente()
+    return True
+
+
+def fechar_stream_microfone():
+    global _pa_instance, _pa_stream
+    try:
+        if _pa_stream:
+            _pa_stream.stop_stream()
+            _pa_stream.close()
+    except Exception:
+        pass
+    try:
+        if _pa_instance:
+            _pa_instance.terminate()
+    except Exception:
+        pass
+    _pa_stream = None
+    _pa_instance = None
+
+
+# ============================================================
+# ÍCONES (gerados na hora, sem precisar de arquivo externo)
+# ============================================================
+def criar_icone(cor):
+    img = Image.new('RGB', (64, 64), color=(30, 30, 30))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse((8, 8, 56, 56), fill=cor)
+    return img
+
+
+ICONE_DORMINDO = criar_icone((80, 80, 220))
+ICONE_ACORDADO = criar_icone((80, 200, 100))
+
+
+# ============================================================
+# CAPTURA DE ÁUDIO COM VAD (usando PyAudioWPatch, stream persistente)
+# ============================================================
+def escutar_frase():
+    if not _garantir_stream():
+        time.sleep(1.0)
+        return None
+
+    recognizer = sr.Recognizer()
+    block_duration = MIC_CHUNK_SIZE / MIC_SAMPLE_RATE
+
+    frames_gravados = []
+    silencio_acumulado = 0.0
+    tempo_total = 0.0
+    comecou_a_falar = False
+
+    while True:
+        try:
+            dados = _pa_stream.read(MIC_CHUNK_SIZE, exception_on_overflow=False)
+        except Exception as e:
+            log(f"Erro lendo do microfone: {e}")
+            fechar_stream_microfone()
+            return None
+
+        bloco = np.frombuffer(dados, dtype=np.int16)
+        rms = float(np.sqrt(np.mean(bloco.astype(np.float32) ** 2)))
+        tempo_total += block_duration
+
+        if rms > LIMIAR_VAD_ATUAL:
+            comecou_a_falar = True
+            silencio_acumulado = 0.0
+            frames_gravados.append(dados)
+        else:
+            silencio_acumulado += block_duration
+            if comecou_a_falar:
+                frames_gravados.append(dados)
+            if silencio_acumulado >= VAD_SILENCIO_MAXIMO:
+                break
+
+        if tempo_total >= VAD_DURACAO_MAXIMA:
+            break
+
+    if not frames_gravados:
+        return None
+
+    audio_bytes = b"".join(frames_gravados)
+
+    try:
+        audio = sr.AudioData(audio_bytes, MIC_SAMPLE_RATE, 2)
+        return recognizer.recognize_google(audio, language=LANGUAGE)
+    except sr.UnknownValueError:
+        return None
+    except sr.RequestError as e:
+        log(f"Erro no reconhecimento (precisa de internet): {e}")
+        return None
+
+
+def contem_wake_word(texto):
+    palavras = [p.strip(",.!?;:") for p in texto.lower().split()]
+    for p in palavras:
+        if difflib.get_close_matches(p, [WAKE_WORD], n=1, cutoff=0.6):
+            return True
+    return False
+
+
+def contem_frase_acordar(texto):
+    texto_lower = texto.lower()
+    return any(frase in texto_lower for frase in FRASES_ACORDAR)
+
+
+# ============================================================
+# ACORDAR O JARVIS PRINCIPAL
+# ============================================================
+def acordar_jarvis(icone):
+    global processo_jarvis, status_atual
+
+    if not _LOCK_ACORDAR.acquire(blocking=False):
+        log("⚠️ Ativação já em andamento, ignorando chamada duplicada.")
+        return
+
+    try:
+        log("🌅 Ativação detectada! Abrindo o Jarvis...")
+        _beep_acordando()
+        status_atual = "🟢 Acordado (Jarvis rodando)"
+        icone.icon = ICONE_ACORDADO
+        icone.title = "Jarvis - Acordado"
+        icone.update_menu()
+
+        fechar_stream_microfone()
+
+        caminho_crash_log = os.path.join(PASTA_JARVIS, "jarvis_crash.log")
+        try:
+            with open(caminho_crash_log, "w", encoding="utf-8") as arquivo_crash:
+                processo_jarvis = subprocess.Popen(
+                    [_caminho_pythonw(), "jarvis.py"],
+                    cwd=PASTA_JARVIS,
+                    stdout=arquivo_crash,
+                    stderr=subprocess.STDOUT,
+                )
+                processo_jarvis.wait()
+
+            # Se o processo morreu rápido demais, quase certamente crashou
+            if processo_jarvis.returncode != 0:
+                log(f"⚠️ jarvis.py encerrou com código {processo_jarvis.returncode} "
+                    f"— veja jarvis_crash.log para detalhes.")
+        except Exception as e:
+            log(f"Erro ao iniciar o Jarvis: {e}")
+
+        log("💤 Jarvis principal encerrado. Voltando a dormir.")
+        status_atual = "😴 Dormindo (diga 'Jarvis, acorda' ou Win+J)"
+        icone.icon = ICONE_DORMINDO
+        icone.title = "Jarvis - Dormindo"
+        icone.update_menu()
+
+        for tentativa in range(1, 6):
+            if _abrir_stream_persistente():
+                return
+            log(f"⏳ Tentativa {tentativa}/5 de reabrir o microfone falhou, aguardando...")
+            time.sleep(tentativa * 1.0)
+
+        log("❌ Não consegui reabrir o microfone depois de várias tentativas.")
+    finally:
+        _LOCK_ACORDAR.release()
+
+def _caminho_pythonw():
+    python_exe = sys.executable
+    pasta = os.path.dirname(python_exe)
+    candidato = os.path.join(pasta, "pythonw.exe")
+    if os.path.exists(candidato):
+        return candidato
+    return python_exe
+
+
+# ============================================================
+# LOOP PRINCIPAL DE ESCUTA
+# ============================================================
+def loop_escuta(icone):
+    log("👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.")
+
+    while True:
+        texto = escutar_frase()
+        if not texto:
+            continue
+
+        log(f"Ouvido: {texto}")
+
+        if (contem_wake_word(texto) or contem_apelido_carinhoso(texto)) and contem_frase_acordar(texto):
+           acordar_jarvis(icone)
+
+
+# ============================================================
+# HOTKEY GLOBAL (Win+J) — alternativa à ativação por voz
+# ============================================================
+def _registrar_hotkey(icone):
+    if not _KEYBOARD_DISPONIVEL:
+        log("ℹ️ Pacote 'keyboard' não instalado — hotkey Win+J desativado (só ativação por voz).")
+        return
+    try:
+        keyboard.add_hotkey('ctrl+alt+j', lambda: threading.Thread(
+    target=acordar_jarvis, args=(icone,), daemon=True
+        ).start())
+        log("⌨️ Hotkey Win+J registrado.")
+    except Exception as e:
+        log(f"⚠️ Não consegui registrar o hotkey Win+J (tente rodar como administrador): {e}")
+
+
+# ============================================================
+# MENU DA BANDEJA
+# ============================================================
+def on_sair(icone, item):
+    log("Encerrando o listener (menu 'Sair completamente').")
+    try:
+        with open(ARQUIVO_SINAL_SAIR, "w", encoding="utf-8") as f:
+            f.write("sair")
+    except Exception:
+        pass
+    fechar_stream_microfone()
+    icone.stop()
+    os._exit(0)
+
+
+def criar_menu():
+    return pystray.Menu(
+        pystray.MenuItem(lambda item: status_atual, lambda icone, item: None, enabled=False),
+        pystray.MenuItem("Sair completamente", on_sair)
+    )
+
+
+def main():
+    log("Testando acesso ao microfone (PyAudioWPatch, índice fixo)...")
+    if not _abrir_stream_persistente():
+        log("❌ Listener não conseguiu acessar o microfone.")
+        return
+
+    log(f"🎙️ Pronto para ouvir: dispositivo {MIC_DEVICE_INDEX}, {MIC_SAMPLE_RATE} Hz")
+
+    icone = pystray.Icon("jarvis_listener", ICONE_DORMINDO, "Jarvis - Dormindo", criar_menu())
+
+    _registrar_hotkey(icone)
+
+    thread = threading.Thread(target=loop_escuta, args=(icone,), daemon=True)
+    thread.start()
+
+    icone.run()
+
+
+if __name__ == "__main__":
+    main()
+==================== Jarvis_watchdog.py ==================== 
+"""
+Watchdog opcional do listener.
+
+Em vez de rodar "pythonw jarvis_listener.py" direto (por exemplo, na
+inicialização do Windows), rode "pythonw jarvis_watchdog.py". Ele cuida
+de (re)lançar o listener sozinho se o processo cair de forma inesperada
+(crash, erro não tratado, etc).
+
+Pra encerrar TUDO de propósito, sem o watchdog reabrir o listener em
+seguida, use o item "Sair completamente" do menu da bandeja — ele deixa
+um arquivo de sinal (.encerrar_definitivo) avisando o watchdog pra
+também parar.
+
+Isso é 100% opcional: se você preferir continuar rodando o
+jarvis_listener.py direto como antes, esse arquivo simplesmente não é
+usado e não muda nada no comportamento existente.
+"""
+import os
+import time
+import subprocess
+
+PASTA_JARVIS = os.path.dirname(os.path.abspath(__file__))
+ARQUIVO_SINAL_SAIR = os.path.join(PASTA_JARVIS, ".encerrar_definitivo")
+ESPERA_ENTRE_TENTATIVAS = 3  # segundos
+
+
+def main():
+    # Limpa qualquer sinal de uma execução anterior antes de começar
+    if os.path.exists(ARQUIVO_SINAL_SAIR):
+        os.remove(ARQUIVO_SINAL_SAIR)
+
+    while True:
+        print("Watchdog: iniciando jarvis_listener.py...")
+        processo = subprocess.Popen(["pythonw", "jarvis_listener.py"], cwd=PASTA_JARVIS)
+        processo.wait()
+
+        if os.path.exists(ARQUIVO_SINAL_SAIR):
+            os.remove(ARQUIVO_SINAL_SAIR)
+            print("Watchdog: encerramento definitivo solicitado pelo menu. Parando.")
+            break
+
+        print(f"Watchdog: o listener caiu inesperadamente. Reabrindo em {ESPERA_ENTRE_TENTATIVAS}s...")
+        time.sleep(ESPERA_ENTRE_TENTATIVAS)
+
+
+if __name__ == "__main__":
+    main()
+==================== log_util.py ==================== 
+import os
+import sys
+import time
+
+TAMANHO_MAXIMO_LOG = 2 * 1024 * 1024  # 2 MB antes de rotacionar
+
+
+def _rotacionar_se_precisar(caminho_log):
+    try:
+        if os.path.exists(caminho_log) and os.path.getsize(caminho_log) > TAMANHO_MAXIMO_LOG:
+            caminho_antigo = caminho_log + ".old"
+            if os.path.exists(caminho_antigo):
+                os.remove(caminho_antigo)
+            os.rename(caminho_log, caminho_antigo)
+    except Exception:
+        pass
+
+
+def criar_logger(caminho_log):
+    def log(msg):
+        linha = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+
+        # Sob pythonw.exe (sem console), sys.stdout é None — chamar
+        # print() nesse caso lança AttributeError e derruba o programa
+        # inteiro. Esse guard evita isso.
+        try:
+            if sys.stdout is not None:
+                print(linha)
+        except Exception:
+            pass
+
+        try:
+            _rotacionar_se_precisar(caminho_log)
+            with open(caminho_log, "a", encoding="utf-8") as f:
+                f.write(linha + "\n")
+        except Exception:
+            pass
+
+    return log
+==================== jarvis_log.txt ==================== 
+[2026-09-25 21:38:11] 🚀 Jarvis iniciando...
+[2026-09-25 21:38:11] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 21:38:11] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 21:39:52] 🚀 Jarvis iniciando...
+[2026-09-25 21:39:52] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 21:39:52] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 21:40:02] 👋 Jarvis encerrado.
+[2026-09-25 21:56:05] 🚀 Jarvis iniciando...
+[2026-09-25 21:56:05] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 21:56:05] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 21:56:14] 👋 Jarvis encerrado.
+
+==================== listener_log.txt ==================== 
+[2026-09-25 17:31:42] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 17:31:43] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:31:43] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 17:31:43] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 17:31:43] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 17:31:45] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:31:49] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:31:57] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:08] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:20] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:32] Ouvido: Jarvis
+[2026-09-25 17:32:32] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:40] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:54] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:58] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 17:32:58] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:32:58] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 17:32:58] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 17:32:58] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 17:32:59] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:04] Ouvido: Jarvis acorda
+[2026-09-25 17:33:04] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:33:10] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:33:10] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:11] Ouvido: Jarvis acorda
+[2026-09-25 17:33:11] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:33:13] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:33:13] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:20] Ouvido: Jarvis acorda
+[2026-09-25 17:33:20] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:33:27] Ouvido: Jarvis acorda
+[2026-09-25 17:33:27] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:33:29] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:33:30] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:31] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:33:31] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:44] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:33:56] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:04] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:12] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:23] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:35] Ouvido: Jarvis sair
+[2026-09-25 17:34:35] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:46] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:34:59] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:10] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:16] Ouvido: Jarvis Bom dia
+[2026-09-25 17:35:16] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:35:22] Ouvido: Jarvis Bom dia
+[2026-09-25 17:35:22] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:35:22] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:35:22] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:28] Ouvido: Jarvis sair
+[2026-09-25 17:35:28] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:35:28] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:40] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:41] Ouvido: Jarvis sair
+[2026-09-25 17:35:47] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:35:59] Ouvido: Jarvis acorda
+[2026-09-25 17:35:59] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:36:03] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:36:03] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:15] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:28] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:34] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:46] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:36:58] Ouvido: ligou mas não apareceu nada e aí a bolinha azul de novo
+[2026-09-25 17:36:58] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:11] Ouvido: menos mais J ninguém ficou amarela na bolinha azul
+[2026-09-25 17:37:11] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:22] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:34] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:46] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:37:58] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:09] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:21] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:33] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:44] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:38:55] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:07] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:18] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:30] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:42] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:39:53] Ouvido: Jarvis acorda
+[2026-09-25 17:39:53] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:39:57] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:39:57] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:09] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:20] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:32] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:44] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:40:55] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:07] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:18] Ouvido: Jarvis acorda
+[2026-09-25 17:41:18] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:41:21] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:41:21] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:33] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:45] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:41:56] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:08] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:19] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:31] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:43] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:42:55] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:07] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:18] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:30] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:42] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:49] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 17:43:49] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:43:49] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 17:43:49] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 17:43:49] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 17:43:54] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:43:54] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:05] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:17] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:28] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:41] Ouvido: controlar o administrador
+[2026-09-25 17:44:41] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:44:53] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:45:05] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:45:16] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:45:30] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:45:45] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:02] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:15] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:27] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:39] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:46:51] Ouvido: Jarvis acorda
+[2026-09-25 17:46:51] 🌅 Frase de ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:46:55] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:46:55] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:07] Ouvido: sai desgraça
+[2026-09-25 17:47:08] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:19] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:31] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:44] Ouvido: and sky for and cromio gol
+[2026-09-25 17:47:44] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:47:56] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:08] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:19] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:24] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:36] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:48] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:48:59] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:49:12] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:49:24] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:50:58] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 17:50:58] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:50:58] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 17:50:59] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 17:50:59] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 17:51:10] Ouvido: Jarvis acorda
+[2026-09-25 17:51:10] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:52:26] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:52:26] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:52:33] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:52:33] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:52:49] Ouvido: Jarvis eu vou gozar
+[2026-09-25 17:53:02] Ouvido: jarras é brincadeira
+[2026-09-25 17:53:10] Ouvido: Jarvis sair
+[2026-09-25 17:53:21] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:53:21] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:53:25] Ouvido: Que beleza tudo pegando
+[2026-09-25 17:53:52] Ouvido: ele tem bloqueado ele tem pouca
+[2026-09-25 17:54:04] Ouvido: falta sei lá personalidade enfim 2
+[2026-09-25 17:54:16] Ouvido: para sempre formas chamar ele e sem formas de mandar
+[2026-09-25 17:56:09] Ouvido: quero assistir pornô
+[2026-09-25 17:56:19] Ouvido: ele acorde
+[2026-09-25 17:56:28] Ouvido: E aí Jarvis acorda
+[2026-09-25 17:56:28] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 17:57:00] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 17:57:00] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 17:57:06] Ouvido: coisas
+[2026-09-25 17:58:55] Ouvido: faça isso
+[2026-09-25 18:06:40] Ouvido: rack rack
+[2026-09-25 18:06:48] Ouvido: carai
+[2026-09-25 18:06:59] Ouvido: Chaves
+[2026-09-25 18:07:09] Ouvido: Vai se foder Vai Vai te tomar no cu
+[2026-09-25 18:07:53] Ouvido: desenho
+[2026-09-25 18:07:57] Ouvido: eu trabalho primeiro
+[2026-09-25 18:15:47] Ouvido: contestação
+[2026-09-25 18:18:06] Ouvido: mamãe vai te bater porque você tá usando essa barriga no chão
+[2026-09-25 18:18:51] Ouvido: já já
+[2026-09-25 20:19:11] Ouvido: escondendo
+[2026-09-25 20:20:59] Ouvido: queijo menos queijo bolo menos ó joga para cá
+[2026-09-25 20:21:05] Ouvido: com mais queijo tá aqui ó
+[2026-09-25 20:21:18] Ouvido: não tem para onde correr Essa é a única forma e se você discou
+[2026-09-25 20:21:30] Ouvido: eu tenho dó do Rafinha irmão Ah porque ele não joga na seleção que ele joga no Barcelona o cara sai do Barcelona com isso aqui Armando para ele isso
+[2026-09-25 20:21:43] Ouvido: criticar um atacante quando você não analisa o contexto vim aqui inclusive
+[2026-09-25 20:22:01] Ouvido: Cláudia acorda
+[2026-09-25 20:22:05] Ouvido: Jarvis acorda
+[2026-09-25 20:22:05] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 20:23:01] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 20:23:01] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 20:23:08] Ouvido: Oi amigo primeiro o que acontece
+[2026-09-25 20:23:23] Ouvido: Lembrando que para você que não sabe o nome da franquia não é Bunny Girl é horizontal Dolls not
+[2026-09-25 20:23:39] Ouvido: Você assiste
+[2026-09-25 20:23:47] Ouvido: assistir o Snapchat
+[2026-09-25 20:23:52] Ouvido: aí você vai assistir
+[2026-09-25 20:23:56] Ouvido: chamada de Santa Claus
+[2026-09-25 20:24:09] Ouvido: você não vai entender absolutamente nada vai ter pulado mais da metade da história então por isso
+[2026-09-25 20:25:49] Ouvido: você é um cara que se chama e eu sou o cara que assiste
+[2026-09-25 20:25:55] Ouvido: açaí para
+[2026-09-25 20:30:12] Ouvido: maiores escândalos da história do futebol Manchester City pode voltar à estaca zero
+[2026-09-25 20:30:51] Ouvido: lugar no futebol de todos os títulos do Manchester City
+[2026-09-25 20:31:46] Ouvido: realmente
+[2026-09-25 20:32:13] Ouvido: É de fato
+[2026-09-25 20:33:28] Ouvido: poderia
+[2026-09-25 20:33:35] Ouvido: eu poderia restaurar nossa
+[2026-09-25 20:33:40] Ouvido: você dorme e acorda com a barra cheia na vida real tem
+[2026-09-25 20:33:47] Ouvido: parecendo que foi atropelado por um caminhão
+[2026-09-25 20:35:12] Ouvido: deveria dar ponto de
+[2026-09-25 20:38:11] Ouvido: bora trampar Jarvis
+[2026-09-25 20:45:00] Ouvido: vai trabalhar
+[2026-09-25 20:45:07] Ouvido: Jarvis acorda
+[2026-09-25 20:45:07] 🌅 Ativação detectada! Abrindo o Jarvis...
+[2026-09-25 20:45:39] 💤 Jarvis principal encerrado. Voltando a dormir.
+[2026-09-25 20:45:39] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 21:55:54] Testando acesso ao microfone (PyAudioWPatch, índice fixo)...
+[2026-09-25 21:55:54] 🎙️ Microfone aberto: Grupo de microfones (Realtek(R) (índice 1)
+[2026-09-25 21:55:54] 🎙️ Pronto para ouvir: dispositivo 1, 44100 Hz
+[2026-09-25 21:55:55] ⌨️ Hotkey Win+J registrado.
+[2026-09-25 21:55:55] 👂 Listener iniciado. Diga 'Jarvis, acorda' ou aperte Win+J quando quiser.
+[2026-09-25 21:55:59] Ouvido: Jarvis acorda
+[2026-09-25 21:55:59] 🌅 Ativação detectada! Abrindo o Jarvis...
+
+==================== TUDO.txt ==================== 
+==================== ferramentas.py ===================

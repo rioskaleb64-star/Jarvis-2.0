@@ -1,0 +1,144 @@
+# JARVIS 2.0 — Especificação de expansão
+
+> Contexto: o JARVIS já existe e funciona — é um assistente de PC por voz em Python/Windows, com um "cérebro" (`jarvis.py`, roteia pra modelos de IA via Groq/OpenRouter), "mãos" (`ferramentas.py`, funções registradas via decorator `@ferramenta`), um listener leve sempre ativo (`jarvis_listener.py`) que acorda o processo principal por wake word, e um HUD visual conectado por websocket (`hud_bridge.py`). Esta especificação é pra dar um salto de capacidade: sair de "abre/fecha app e ajusta volume" pra "controla o PC inteiro, pesquisa de verdade e escreve em qualquer app por mim".
+
+---
+
+## 0. Regra de ouro (não quebrar isso ao expandir)
+
+O JARVIS hoje só executa **funções pré-registradas** com parâmetros tipados (o decorator `@ferramenta` + `TOOLS`/`FUNCOES_DISPONIVEIS`). A IA nunca gera comando de shell livre, ela só escolhe qual função chamar.
+
+**Isso tem que continuar valendo por mais funções que a gente adicione.** Nunca criar uma tool tipo `executar_comando(cmd: str)` que rode uma string vinda do modelo direto no shell — isso abre a porta pra qualquer texto malicioso que o JARVIS "leia" em algum momento (ex: conteúdo de uma página, de uma mensagem, do clipboard) virar execução arbitrária. Toda capacidade nova = uma função nova, específica, com parâmetros claros.
+
+Com o poder que estamos adicionando (matar processo, escrever mensagens, mexer no sistema), também precisamos de **camadas de risco** — ver seção 3.
+
+---
+
+## 1. Correções antes/durante a expansão (débito técnico atual)
+
+Pequeno mas importante — corrigir junto:
+
+1. **Hotkey documentada errada.** Comentários e logs em `jarvis.py` e `jarvis_listener.py` dizem "Win+J", mas o bind real é `keyboard.add_hotkey('ctrl+alt+j', ...)`. Alinhar a doc com o atalho real (ou trocar o atalho pra bater com a doc).
+2. **VAD nunca calibra.** `LIMIAR_VAD_ATUAL` existe nos dois arquivos como se fosse recalibrado dinamicamente, mas nunca é reatribuído — o limiar de silêncio é sempre o valor fixo `500`. Implementar calibração real: medir o RMS do ruído ambiente no primeiro segundo após abrir o stream e setar o limiar como `ruido_base * fator`.
+3. **`Jarvis_watchdog.py` chama `"pythonw"` cru**, confiando no PATH. `jarvis_listener.py` já resolve isso certo com `_caminho_pythonw()` (deriva de `sys.executable`) — replicar a mesma lógica no watchdog.
+4. **Race condition no histórico de conversa.** Comandos por voz e por texto do HUD podem mexer no `HISTORICO` global ao mesmo tempo, em threads diferentes, sem lock. Adicionar `threading.Lock()` em volta do append/trim/save.
+5. **Tool calling não fecha o loop.** Quando o modelo chama uma função, o resultado da função vira a resposta final direto — nunca volta pro modelo pra virar uma resposta na personalidade do Jarvis. Implementar o round-trip completo: mandar o resultado da tool de volta pro modelo (`role: tool`) e pegar a resposta final formatada dele.
+6. **Config e código de microfone duplicados.** `jarvis.py` e `jarvis_listener.py` têm cópias quase idênticas de `_abrir_stream_persistente`, `_garantir_stream`, `fechar_stream_microfone` e das constantes de áudio (`MIC_DEVICE_INDEX`, `MIC_SAMPLE_RATE`, etc). Extrair um `mic_util.py` compartilhado (mesmo raciocínio que já existe no `hud_util.py`).
+7. **`resumir_clipboard` duplica o loop de fallback de provedores** que já existe em `processar_comando_ia`. Extrair um helper genérico `chamar_ia_com_fallback(mensagens, provedores, max_tokens)`.
+8. **Slugs de modelo não confirmados** (o próprio código já avisa disso) — `qwen/qwen3.8-27b` e `nvidia/nemotron-3-ultra-550b-a55b:free` precisam ser conferidos no catálogo atual da Groq/OpenRouter antes de depender deles.
+9. **Testes unitários pros roteadores puros**: `escolher_perfil`, `tentar_comando_direto`, `detectar_wake_word`, `deve_encerrar_sessao` são funções puras (regex/heurística) — fáceis de testar e evita regressão toda vez que mexer numa frase de gatilho.
+
+---
+
+## 2. Controle de sistema (brilho, energia, aparência)
+
+Novo módulo de tools, ex: `sistema_avancado.py` ou seção nova em `ferramentas.py`.
+
+- **Brilho da tela**: biblioteca `screen-brightness-control` (`pip install screen-brightness-control`, funciona em Windows via WMI). API: `sbc.set_brightness(nivel)`, `sbc.get_brightness()`. Tools: `ajustar_brilho(nivel)`, `aumentar_brilho(passo=10)`, `diminuir_brilho(passo=10)`.
+- **Tema claro/escuro**: alternar via registro do Windows (chave `AppsUseLightTheme`/`SystemUsesLightTheme` em `HKEY_CURRENT_USER\...\Personalize`, usando `winreg`, que já é padrão do Python).
+- **Wi-Fi / Bluetooth on-off**: via `netsh interface set interface "Wi-Fi" enabled/disabled` (precisa rodar como admin) ou, pra Bluetooth, PowerShell (`Get-PnpDevice`/`Disable-PnpDevice`). Documentar que isso exige privilégio elevado.
+- **Mute/unmute rápido**: já existe `ajustar_volume`, adicionar `mutar_pc()` / `desmutar_pc()` usando o mesmo `pycaw` que já é dependência do projeto.
+
+---
+
+## 3. Janelas e processos — "fechar/controlar o que eu quiser"
+
+Hoje `fechar_app` só fecha apps que estão no `apps_cache.json` (atalhos do menu iniciar). Isso não cobre processos avulsos, jogos, ferramentas de linha de comando, etc.
+
+- **`matar_processo(nome)`**: busca em **todos** os processos rodando (via `psutil.process_iter`), não só nos que têm atalho — resolve "fecha o que eu quiser" de verdade.
+- **Lista de proteção obrigatória**: nunca permitir matar processos críticos do sistema (`explorer.exe`, `csrss.exe`, `wininit.exe`, `winlogon.exe`, `services.exe`, `lsass.exe`, `System`, `svchost.exe` quando for uma instância de sistema). Se o nome pedido bater com essa lista, recusar e avisar, nunca executar.
+- **`listar_processos_abertos()`**: devolve os processos com janela visível, pra IA (ou o usuário) saber o que dá pra fechar.
+- **`focar_janela(nome)`**: traz uma janela existente pra frente pelo nome/título, em vez de abrir uma nova instância.
+- **`mover_janela(posicao)`** ("joga essa janela pra esquerda/direita/tela cheia"): usar `win32gui.MoveWindow` ou os atalhos nativos do Windows (`Win+Seta`) via `pyautogui.hotkey`.
+
+Qualquer coisa fora da whitelist de "seguro" (ver seção 5) deve pedir confirmação, igual já acontece hoje com `desligar_pc`/`reiniciar_pc`.
+
+---
+
+## 4. Arquivos — achar e abrir qualquer coisa por nome
+
+Busca de arquivo no Windows por `os.walk` é lento demais pra uma resposta de voz. A solução testada e muito mais rápida é o **Everything** (voidtools):
+
+1. O usuário instala o app gratuito "Everything" (voidtools.com) — ele mantém um índice do sistema de arquivos sempre atualizado e rodando em segundo plano.
+2. O JARVIS conversa com ele via a **Everything SDK** (DLL + `ctypes`, tem exemplo oficial em Python na documentação do voidtools) — mesmo padrão que o projeto já usa pra COM/DLL (`comtypes`, `win32com`).
+3. Tools: `achar_arquivo(nome)` (devolve caminho(s) mais prováveis), `abrir_arquivo_por_nome(nome)`, `abrir_pasta_por_nome(nome)`.
+
+Isso dá busca em milissegundos em qualquer HD, sem precisar re-escanear nada.
+
+---
+
+## 5. Pesquisa de verdade nos navegadores
+
+Hoje `pesquisar_google`/`abrir_navegador` só abrem uma aba com a URL de busca — o Jarvis não sabe o que está na página, só manda o usuário olhar. Duas camadas:
+
+**5.1 — Resposta falada, sem abrir nada (rápido, pra perguntas de conhecimento):**
+- Usar a **Tavily API** (`pip install tavily-python`) — free tier de 1.000 créditos/mês, sem cartão de crédito, feita especificamente pra alimentar respostas de IA (já devolve o conteúdo relevante "limpo", sem precisar fazer scraping). Tool: `pesquisar_na_web(pergunta)` → busca, manda os resultados de volta pro modelo, o modelo fala a resposta com a personalidade do Jarvis.
+- *(Bing Search API foi descontinuada em agosto de 2025 — não é mais opção. Alternativas pagas equivalentes: Brave Search API ou SerpApi, caso queiram comparar preço depois.)*
+
+**5.2 — Abrir e mostrar de verdade (quando o usuário quer ver):**
+- Mantém `abrir_navegador`/`pesquisar_google` como estão hoje.
+
+**5.3 — Fase avançada (opcional, mas é o "próximo nível" de verdade pro navegador):**
+- Criar uma **extensão de navegador** (Manifest V3, Chrome/Edge/Brave) que se conecta no mesmo servidor websocket que já existe (`hud_bridge.py`) ou em um canal parecido. Com isso o Jarvis passa a controlar abas de verdade via `chrome.tabs` API: fechar uma aba específica (não só "fecha o Chrome inteiro"), ler o conteúdo da aba ativa, trocar de aba, etc. — muito mais robusto que simular teclas com `pyautogui` (que é como o modo Tor do Brave funciona hoje, e é frágil por depender de foco de janela e timing).
+
+---
+
+## 6. Digitação universal — a chave pra "escrever no Discord" (e em qualquer outro app)
+
+Em vez de construir uma integração específica pro Discord, a solução mais elegante e reaproveitável é um comando genérico de **digitar/ditar na janela em foco**, porque isso resolve Discord, WhatsApp Web/Desktop, Telegram, e-mail, Word, campo de busca do navegador — qualquer lugar com uma caixa de texto — com uma única tool.
+
+- **`digitar_na_janela_ativa(texto, enviar=False)`**: coloca `texto` no clipboard e simula `Ctrl+V` na janela em foco (mais confiável que `pyautogui.typewrite` pra acento/emoji), e só aperta Enter se `enviar=True`.
+- **Fluxo de mensagem com segurança embutida**: quando o usuário pede algo como "manda pro fulano que vou chegar atrasado", o Jarvis **preenche a caixa de texto e não aperta Enter por padrão** — só envia se o usuário confirmar ("manda", "envia", "sim") dentro de uma janela curta, reaproveitando o mesmo mecanismo de confirmação que já existe hoje pra desligar/reiniciar o PC (ver seção 3 da spec original, `_pedir_confirmacao`/`AGUARDANDO_CONFIRMACAO`, generalizado). Isso evita que um erro de reconhecimento de voz mande uma mensagem errada sem querer.
+- Pra localizar a janela certa (Discord, WhatsApp, etc.) com mais precisão que só "janela em foco", dá pra usar `pywinauto` (backend `uia`) pra achar a janela pelo título/classe, em vez de depender só do foco atual.
+
+**Nota importante sobre Discord especificamente**: a forma correta e segura de fazer isso é automação de UI (digitar na janela do app Discord já aberto), **não** usar um token de usuário com a API do Discord pra automatizar a própria conta ("self-bot") — isso viola os termos de uso do Discord e pode banir a conta. A abordagem de digitação universal acima evita esse problema completamente, porque ela só simula o que você mesmo faria com o teclado.
+
+---
+
+## 7. Voz — o próximo nível de responsividade
+
+- **Wake word 100% local**: hoje o `jarvis_listener.py`, mesmo "dormindo", manda todo áudio pro Google (`recognize_google`) só pra checar se você disse "Jarvis, acorda" — ou seja, precisa de internet e manda áudio pra nuvem o tempo todo, só pra ativação. Trocar por **openWakeWord** (`pip install openwakeword`): ele já vem com um modelo pré-treinado chamado **"hey_jarvis"**, pronto, batendo exatamente com o nome do assistente. Isso deixa o listener rodando 100% offline até o momento de ativação de verdade, com latência bem menor.
+- **TTS local de volta**: a resposta por voz foi desativada só por causa da latência das opções antigas. Hoje dá pra usar **Piper** (`pip install piper-tts`) — é rápido o suficiente pra rodar em CPU sem travar o fluxo, e tem vozes prontas em `pt_BR`. Vale reativar a resposta falada com isso.
+
+---
+
+## 8. Camadas de risco / confirmação (arquitetura de segurança)
+
+Com tanta função nova que mexe de verdade no sistema, formalizar o que hoje já existe informalmente (o `_pedir_confirmacao` usado só em `desligar_pc`/`reiniciar_pc`):
+
+- **Nível 0 — informativo/reversível na hora**: abrir app, pesquisar, ajustar volume/brilho, media, print, minimizar → executa direto.
+- **Nível 1 — muda algo mas é fácil de desfazer**: fechar app/janela, trocar tema, toggle de wifi/bluetooth → executa direto, mas loga a ação.
+- **Nível 2 — pode incomodar ou afetar outras pessoas**: matar processo fora da whitelist de "seguros", enviar mensagem em outro app → pede confirmação por voz antes de efetivar (mesmo padrão do desligar/reiniciar hoje).
+- **Nível 3 — crítico/difícil de desfazer**: desligar/reiniciar o PC, apagar arquivo, matar processo de sistema → sempre com confirmação, nunca automatizável por regra direta sem passar pela IA revisando o pedido.
+
+Sugestão de implementação: em vez de duplicar a lógica de confirmação em cada tool nova (como já é feito hoje só pra desligar/reiniciar), criar um decorator `@requer_confirmacao("mensagem")` que qualquer tool pode usar, reaproveitando o `AGUARDANDO_CONFIRMACAO`/`resolver_confirmacao` que já existe.
+
+Também vale logar toda ação de nível 2+ no `jarvis_log.txt` (já existe a infra de log, é só usar) pra ter um histórico auditável do que o assistente já executou.
+
+---
+
+## 9. Ordem sugerida de implementação
+
+**Fase 1 — base sólida** (sem isso, o resto fica frágil):
+correções da seção 1 (especialmente o loop de tool calling e o `mic_util.py` compartilhado) + generalizar a confirmação (seção 8).
+
+**Fase 2 — ganhos rápidos, baixo risco**:
+brilho, tema, mute/unmute (seção 2), janelas/processos genéricos com whitelist de proteção (seção 3), busca de arquivos via Everything (seção 4).
+
+**Fase 3 — a parte que o usuário mais pediu**:
+digitação universal + fluxo de mensagem com confirmação (seção 6).
+
+**Fase 4 — pesquisa e voz**:
+Tavily pra pesquisa falada (seção 5.1), wake word local com openWakeWord (seção 7), TTS local com Piper (seção 7).
+
+**Fase 5 — avançado/opcional**:
+extensão de navegador pra controle real de abas (seção 5.3).
+
+---
+
+## Bibliotecas novas (resumo pra instalar)
+
+```
+pip install screen-brightness-control pywinauto openwakeword piper-tts tavily-python
+```
+Mais o app **Everything** (voidtools.com, instalação separada, não é pip) pra busca de arquivos.

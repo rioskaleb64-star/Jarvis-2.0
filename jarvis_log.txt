@@ -1,0 +1,82 @@
+[2026-09-25 21:38:11] 🚀 Jarvis iniciando...
+[2026-09-25 21:38:11] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 21:38:11] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 21:39:52] 🚀 Jarvis iniciando...
+[2026-09-25 21:39:52] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 21:39:52] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 21:40:02] 👋 Jarvis encerrado.
+[2026-09-25 21:56:05] 🚀 Jarvis iniciando...
+[2026-09-25 21:56:05] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 21:56:05] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 21:56:14] 👋 Jarvis encerrado.
+[2026-09-25 22:22:35] 🚀 Jarvis iniciando...
+[2026-09-25 22:22:35] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 22:22:35] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 22:22:55] 👋 Jarvis encerrado.
+[2026-09-25 22:33:17] 🚀 Jarvis iniciando...
+[2026-09-25 22:33:17] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 22:33:17] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 22:33:36] 🔀 Perfil escolhido: rapido
+[2026-09-25 22:33:55] 🔀 Perfil escolhido: complexo
+[2026-09-25 22:33:56] ⚠️ Provedor OpenRouter-Nemotron falhou: Error code: 401 - {'error': {'message': 'Missing Authentication header', 'code': 401}}
+[2026-09-25 22:34:32] 👋 Jarvis encerrado.
+[2026-09-25 22:40:57] 🚀 Jarvis iniciando...
+[2026-09-25 22:40:57] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 22:40:58] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 22:41:18] 🔀 Perfil escolhido: complexo
+[2026-09-25 22:41:19] ⚠️ Provedor OpenRouter-Nemotron falhou: Error code: 401 - {'error': {'message': 'Missing Authentication header', 'code': 401}}
+[2026-09-25 22:41:39] 👋 Jarvis encerrado.
+[2026-09-25 22:47:09] 🚀 Jarvis iniciando...
+[2026-09-25 22:47:09] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-25 22:47:09] ⌨️ Hotkey Win+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-25 22:47:29] 🔀 Perfil escolhido: complexo
+[2026-09-25 22:47:49] 🔀 Perfil escolhido: complexo
+[2026-09-25 22:48:29] 👋 Jarvis encerrado.
+[2026-09-26 14:48:38] 🚀 Jarvis iniciando...
+[2026-09-26 14:48:38] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-26 14:48:39] ⌨️ Hotkey Ctrl+Alt+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-26 14:48:40] Microfone pronto; ruído base 176, limiar VAD 528.
+[2026-09-26 14:49:08] 🔀 Perfil escolhido: rapido
+[2026-09-26 14:49:45] 🔀 Perfil escolhido: rapido
+[2026-09-26 14:51:43] 👋 Jarvis encerrado.
+[2026-09-26 15:09:42] 🚀 Jarvis iniciando...
+[2026-09-26 15:09:42] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-26 15:09:42] ⌨️ Hotkey Ctrl+Alt+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-26 15:09:42] ⚠️ Não consegui registrar o hotkey Ctrl+Alt+J (tente rodar como administrador): Event loop is closed
+[2026-09-26 15:09:54] 🚀 Jarvis iniciando...
+[2026-09-26 15:09:54] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-26 15:09:54] ⌨️ Hotkey Ctrl+Alt+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-26 15:09:54] ⚠️ Não consegui registrar o hotkey Ctrl+Alt+J (tente rodar como administrador): Event loop is closed
+[2026-09-26 15:36:47] 🚀 Jarvis iniciando...
+[2026-09-26 15:36:47] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-26 15:36:47] ⌨️ Hotkey Ctrl+Alt+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-26 15:36:48] Microfone pronto; ruído base 178, limiar VAD 533.
+[2026-09-26 15:37:13] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:42:52] 🚀 Jarvis iniciando...
+[2026-09-26 15:42:52] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-26 15:42:52] ⌨️ Hotkey Ctrl+Alt+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-26 15:42:54] Microfone pronto; ruído base 91, limiar VAD 500.
+[2026-09-26 15:43:14] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:43:51] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:44:02] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:44:12] 👋 Jarvis encerrado.
+[2026-09-26 15:51:09] 🚀 Jarvis iniciando...
+[2026-09-26 15:51:09] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-26 15:51:09] ⌨️ Hotkey Ctrl+Alt+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-26 15:51:11] Microfone pronto; ruído base 145, limiar VAD 500.
+[2026-09-26 15:51:22] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:51:34] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:51:48] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:52:05] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:52:24] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:52:35] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:52:39] ⚠️ Resposta após ferramenta falhou: Error code: 400 - {'error': {'message': 'Tool choice is none, but model called a tool', 'type': 'invalid_request_error', 'code': 'tool_use_failed', 'failed_generation': '{"name": "abrir_app", "arguments": {"nome":"Spotify"}}'}}
+[2026-09-26 15:52:46] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:53:02] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:53:11] 🔀 Perfil escolhido: rapido
+[2026-09-26 15:53:33] Microfone pronto; ruído base 151, limiar VAD 500.
+[2026-09-26 15:53:45] 👋 Jarvis encerrado.
+[2026-09-26 22:36:31] 🚀 Jarvis iniciando...
+[2026-09-26 22:36:31] ℹ️ faster-whisper não instalado — fallback offline de voz desativado.
+[2026-09-26 22:36:31] ⌨️ Hotkey Ctrl+Alt+J registrado (fala direto, sem precisar dizer 'Jarvis').
+[2026-09-26 22:36:33] Microfone pronto; ruído base 185, limiar VAD 555.
